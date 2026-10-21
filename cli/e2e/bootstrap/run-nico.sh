@@ -311,6 +311,21 @@ nerdctl build --file "${PROFILES_FIXTURE_DIR}/Dockerfile" --tag "${PROFILES_IMAG
 export NVKECTL_NVKE_CONTROLLER_PROFILES_IMAGE="${PROFILES_IMAGE}"
 log "PASS: the node and profiles images are in containerd"
 
+# The bootstrap also installs the NVKE stack on the site cluster, whose nodes
+# pull its images themselves, so nvkectl requires names with a registry. The
+# images are imported into each site node instead (stage 3), so nothing is
+# pulled from this registry.
+SITE_IMAGE_REGISTRY=nvke-e2e.invalid
+untag_site_images() { nerdctl rmi "$@" >/dev/null 2>&1 || true; }
+site_images=()
+for image in "${NVKECTL_NVKE_CONTROLLER_IMAGE}" "${NVKECTL_NVKE_CONTROLLER_PROFILES_IMAGE}"; do
+  tagged="${SITE_IMAGE_REGISTRY}/${image##*/}"
+  nerdctl tag "${image}" "${tagged}" || fail "could not tag ${image} as ${tagged}"
+  defer untag_site_images "${tagged}"
+  site_images+=("${tagged}")
+done
+export NVKECTL_NVKE_CONTROLLER_IMAGE="${site_images[0]}" NVKECTL_NVKE_CONTROLLER_PROFILES_IMAGE="${site_images[1]}"
+
 # ── Stage 2: nico-sim ──────────────────────────────────────────────────────
 
 log "building nico-sim"
@@ -652,6 +667,28 @@ if [ "${bridged}" != true ]; then
   abort_bootstrap
 fi
 
+# Each site node gets the images as soon as its containerd answers. A pod that
+# asked first backs off and finds the image on its next try. The archive is
+# copied in rather than piped: nerdctl exec -i truncates a large stdin.
+site_images_archive="${SIM_STATE_DIR}/site-images.tar"
+nerdctl save --output "${site_images_archive}" "${site_images[@]}" || fail "could not save ${site_images[*]}"
+declare -A imported=()
+import_site_images() {
+  local node
+  for node in $(nerdctl ps -q --filter "label=${SIM_LABEL}"); do
+    [ -z "${imported[${node}]:-}" ] || continue
+    nerdctl exec "${node}" ctr -n k8s.io version >/dev/null 2>&1 || continue
+    nerdctl cp "${site_images_archive}" "${node}:/site-images.tar" &&
+      nerdctl exec "${node}" ctr -n k8s.io images import /site-images.tar >/dev/null || continue
+    imported[${node}]=1
+    log "imported the controller and profiles images into site node ${node}"
+  done
+}
+while kill -0 "${bootstrap_pid}" 2>/dev/null; do
+  import_site_images
+  sleep 5
+done
+
 status=0
 wait "${bootstrap_pid}" || status=$?
 bootstrap_pid=""
@@ -668,6 +705,28 @@ grep -q "installing CAPNICo" <<<"${output}" || fail "the bootstrap never install
 grep -q "cluster provisioned" <<<"${output}" || fail "the command exited 0 without reporting the cluster provisioned"
 [ -s "${TENANT_KUBECONFIG}" ] || fail "no kubeconfig was written to ${TENANT_KUBECONFIG}"
 log "PASS: bootstrap site created the site cluster, allocating its machines through CAPNICo"
+
+grep -q "the NVKE stack on the site cluster is healthy" <<<"${output}" ||
+  fail "the command exited 0 without reporting the NVKE stack on the site cluster healthy"
+# Every workload the stack installs on the site is rolled out and every pod of it
+# is Ready, not just the controller nvkectl waited on.
+sk() { kubectl --kubeconfig "${TENANT_KUBECONFIG}" "$@"; }
+stack_namespaces=(local-path-storage postgres temporal spire-server capi-system capi-kubeadm-bootstrap-system
+  capi-kubeadm-control-plane-system capnico-system "${CONTROLLER_NAMESPACE}")
+for ns in "${stack_namespaces[@]}"; do
+  workloads="$(sk -n "${ns}" get deployment,statefulset,daemonset -o name)" || fail "could not list the workloads in ${ns} on the site cluster"
+  [ -n "${workloads}" ] || fail "the site cluster has no workloads in ${ns}"
+  for workload in ${workloads}; do
+    sk -n "${ns}" rollout status "${workload}" --timeout=180s >/dev/null ||
+      fail "${ns}/${workload} is not rolled out on the site cluster"
+  done
+  sk -n "${ns}" wait --for=condition=Ready pod --all --field-selector=status.phase!=Succeeded --timeout=120s >/dev/null ||
+    fail "a pod in ${ns} is not Ready on the site cluster"
+  sk -n "${ns}" get pods --no-headers | awk -v ns="${ns}" '{print "  " ns "/" $1, $3, "restarts=" $4}'
+done
+sk get storageclass -o 'jsonpath={range .items[*]}{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}{"\n"}{end}' |
+  grep -qx true || fail "the site cluster has no default StorageClass"
+log "PASS: every NVKE stack workload on the site cluster is rolled out and Ready: ${stack_namespaces[*]}"
 
 # ── Stage 4: what was built ────────────────────────────────────────────────
 
