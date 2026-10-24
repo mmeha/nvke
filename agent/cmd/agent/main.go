@@ -23,6 +23,10 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
@@ -317,21 +321,36 @@ func newAuditLogInterceptor(logger *slog.Logger) grpc.UnaryServerInterceptor {
 			clientAddress = p.Addr.String()
 		}
 
-		logger.Info(
-			"grpc request received",
+		attrs := []slog.Attr{
 			slog.String("method", method.FullMethod),
 			slog.String("error", errorResponse),
 			slog.String("user-agent", client),
 			slog.String("client-address", clientAddress),
-		)
+		}
+		if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
+			attrs = append(attrs,
+				slog.String("trace_id", spanContext.TraceID().String()),
+				slog.String("span_id", spanContext.SpanID().String()),
+			)
+		}
+
+		logger.LogAttrs(ctx, slog.LevelInfo, "grpc request received", attrs...)
 		return m, err
 	}
 }
 
-func startSecureServer(ctx context.Context, cfg AgentConfig, agentServer *server.NodeAgentServer, auditLogger *slog.Logger) {
-	serverOptions := []grpc.ServerOption{
+func newGRPCServerOptions(auditLogger *slog.Logger) []grpc.ServerOption {
+	return []grpc.ServerOption{
+		grpc.StatsHandler(otelgrpc.NewServerHandler(
+			otelgrpc.WithPropagators(propagation.TraceContext{}),
+			otelgrpc.WithTracerProvider(noop.NewTracerProvider()),
+		)),
 		grpc.UnaryInterceptor(newAuditLogInterceptor(auditLogger)),
 	}
+}
+
+func startSecureServer(ctx context.Context, cfg AgentConfig, agentServer *server.NodeAgentServer, auditLogger *slog.Logger) {
+	serverOptions := newGRPCServerOptions(auditLogger)
 
 	if !cfg.DisableMTLS {
 		tlsCfg, err := buildServerTLSConfig(ctx, cfg)

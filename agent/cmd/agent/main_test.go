@@ -4,11 +4,24 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"flag"
+	"log/slog"
+	"net"
 	"strings"
 	"testing"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 // The authorizer is the whole of this agent's access control, so these pin what it
@@ -224,4 +237,60 @@ func TestControllerClientCABundleNames(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuditLogCarriesIncomingTraceContext(t *testing.T) {
+	var auditLog bytes.Buffer
+	server := grpc.NewServer(newGRPCServerOptions(slog.New(slog.NewJSONHandler(&auditLog, nil)))...)
+	healthpb.RegisterHealthServer(server, health.NewServer())
+
+	listener := bufconn.Listen(1024 * 1024)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+
+	conn, err := grpc.NewClient(
+		"passthrough:///bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	client := healthpb.NewHealthClient(conn)
+
+	const traceID = "0123456789abcdef0123456789abcdef"
+	const parentSpanID = "0123456789abcdef"
+	tracedCtx := metadata.AppendToOutgoingContext(
+		context.Background(),
+		"traceparent", "00-"+traceID+"-"+parentSpanID+"-01",
+	)
+	_, err = client.Check(tracedCtx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	_, err = client.Check(context.Background(), &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	malformedCtx := metadata.AppendToOutgoingContext(
+		context.Background(),
+		"traceparent", "not-a-valid-traceparent",
+	)
+	_, err = client.Check(malformedCtx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+
+	decoder := json.NewDecoder(&auditLog)
+	var tracedRecord map[string]any
+	require.NoError(t, decoder.Decode(&tracedRecord))
+	assert.Equal(t, traceID, tracedRecord["trace_id"])
+	assert.Equal(t, parentSpanID, tracedRecord["span_id"])
+	assert.Equal(t, "/grpc.health.v1.Health/Check", tracedRecord["method"])
+
+	var untracedRecord map[string]any
+	require.NoError(t, decoder.Decode(&untracedRecord))
+	assert.NotContains(t, untracedRecord, "trace_id")
+	assert.NotContains(t, untracedRecord, "span_id")
+
+	var malformedRecord map[string]any
+	require.NoError(t, decoder.Decode(&malformedRecord))
+	assert.NotContains(t, malformedRecord, "trace_id")
+	assert.NotContains(t, malformedRecord, "span_id")
 }

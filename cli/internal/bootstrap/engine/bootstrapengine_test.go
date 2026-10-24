@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -471,5 +472,73 @@ func TestRenderKindConfig_WritesTheListenAddress(t *testing.T) {
 	out := string(body)
 	if strings.Count(out, "listenAddress:") != 1 || !strings.Contains(out, "listenAddress: 127.0.0.1") {
 		t.Errorf("want listenAddress on the first mapping only; got:\n%s", out)
+	}
+}
+
+func TestKindEnvAs_IsolatesTheRuntimeCNIConfig(t *testing.T) {
+	for name, tc := range map[string]struct {
+		euid        int
+		netconfPath string
+		want        map[string]string
+	}{
+		"root moves the configs out of the node's CNI directory": {
+			euid: 0,
+			want: map[string]string{kindExperimentalProviderEnv: "nerdctl", netconfPathEnv: IsolatedCNIConfDir},
+		},
+		"the operator's directory wins": {
+			euid:        0,
+			netconfPath: "/srv/cni",
+			want:        map[string]string{kindExperimentalProviderEnv: "nerdctl"},
+		},
+		"the shared directory is replaced, however it is spelled": {
+			euid:        0,
+			netconfPath: "/etc/cni/net.d/",
+			want:        map[string]string{kindExperimentalProviderEnv: "nerdctl", netconfPathEnv: IsolatedCNIConfDir},
+		},
+		"rootless keeps its per-user directory": {
+			euid: 1000,
+			want: map[string]string{kindExperimentalProviderEnv: "nerdctl"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := kindEnvAs(tc.euid, tc.netconfPath)
+			if len(got) != len(tc.want) {
+				t.Fatalf("env = %v, want %v", got, tc.want)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Errorf("%s = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestNerdctlCNIConfigs(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"nerdctl-bridge.conflist", "nerdctl-kind.conflist", "10-ovn-kubernetes.conf", "other.conflist"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := NerdctlCNIConfigs(dir)
+	if err != nil {
+		t.Fatalf("NerdctlCNIConfigs returned error: %v", err)
+	}
+	want := []string{filepath.Join(dir, "nerdctl-bridge.conflist"), filepath.Join(dir, "nerdctl-kind.conflist")}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("configs = %v, want %v", got, want)
+	}
+
+	if got, err := NerdctlCNIConfigs(filepath.Join(dir, "missing")); err != nil || len(got) != 0 {
+		t.Errorf("a missing directory = %v, %v; want none and no error", got, err)
+	}
+
+	// A parent that is a file fails with ENOTDIR whoever runs the test, which a
+	// chmod 000 directory would not for root.
+	file := filepath.Join(dir, "10-ovn-kubernetes.conf")
+	if _, err := NerdctlCNIConfigs(filepath.Join(file, "net.d")); err == nil {
+		t.Error("an unreadable directory must be an error, not an empty one")
 	}
 }

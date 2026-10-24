@@ -197,7 +197,7 @@ Leave NVKE in permissive mode while your existing callers keep working, and watc
 1. Read the authentication counter.
 
    ```bash
-   kubectl -n nke-controller exec deploy/nke-controller -- curl -s http://127.0.0.1:9090/metrics | grep '^nvke_auth_requests_total'
+   kubectl -n nke-controller exec deploy/nke-controller -- wget -qO- http://127.0.0.1:9090/metrics | grep '^nvke_auth_requests_total'
    ```
 
    ```text
@@ -256,7 +256,7 @@ The deploy path's own values turn authentication off. Every time you run the ins
 1. Check the mode the controller reports.
 
    ```bash
-   kubectl -n nke-controller exec deploy/nke-controller -- curl -s http://127.0.0.1:9090/metrics | grep '^nvke_auth_enabled'
+   kubectl -n nke-controller exec deploy/nke-controller -- wget -qO- http://127.0.0.1:9090/metrics | grep '^nvke_auth_enabled'
    ```
 
    The output is `nvke_auth_enabled{mode="enforcing"} 1`.

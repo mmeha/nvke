@@ -276,7 +276,7 @@ if not _tilt_env:
 
 # ---------------------------------------------------------------------------
 # cert-manager — needed by the OIDC discovery provider to issue its TLS cert
-# from the long-lived NVKE OIDC upstream CA (see deploy/k8s/oidc-upstream-ca.yaml).
+# from the long-lived NVKE OIDC upstream CA (see deploy/k8s/oidc-upstream-ca-certificate.yaml).
 #
 # cert-manager is frequently already present out-of-band — most commonly
 # clusterctl installs its own copy when it initialises CAPI. We probe the
@@ -817,6 +817,11 @@ helm_resource(
 
 k8s_yaml([
     "deploy/k8s/oidc-upstream-ca.yaml",
+    # Separate because the deploy paths apply it only on a first install; Tilt
+    # has no such gate, so a long-lived dev cluster re-issues the CA when this
+    # Certificate's spec changes. Delete the oidc-provider-upstream-ca Secret
+    # if anything in the dev loop has embedded the old CA.
+    "deploy/k8s/oidc-upstream-ca-certificate.yaml",
     "deploy/k8s/spire-server-nodeport.yaml",
     "deploy/k8s/spire-oidc-provider-nodeport.yaml",
     "deploy/k8s/spire-tpm-pubhashes-configmap.yaml",

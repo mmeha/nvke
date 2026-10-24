@@ -17,6 +17,10 @@ image:
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
+# Tilt runs the controller as root on a writable root filesystem, unlike every
+# deploy path. live_update syncs bin/controller into /usr/local/bin in the
+# running container (Tiltfile), which the chart's default uid 65532 and
+# read-only root would refuse, turning each edit into a full image rebuild.
 podSecurityContext: null
 securityContext:
   readOnlyRootFilesystem: false

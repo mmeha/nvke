@@ -31,6 +31,36 @@ kubectl logs deployment/nke-controller -n nke-controller --since=1h \
 
 [Observe NVKE and its clusters](observe.md) describes how to raise the log level.
 
+### Inside the management-plane pod
+
+The `nke-controller` image has a busybox shell, so `kubectl exec` works for quick checks. It has `sh`, `wget`, `nc`, `ip`, `netstat`, `ps` and the usual file tools, but no `bash`, `curl`, `nslookup` or `dig`. Read the metrics endpoint from inside the pod:
+
+```bash
+kubectl exec -n nke-controller deploy/nke-controller -- wget -qO- http://127.0.0.1:9090/metrics
+```
+
+Busybox `wget` does not verify TLS certificates, so do not use it to check an HTTPS endpoint.
+
+For anything the image does not carry, attach a debug container to the running pod. It shares the pod's network and, with `--target`, can see the management-plane process.
+
+1. Find the pod name:
+
+   ```bash
+   kubectl get pod -n nke-controller -l app.kubernetes.io/name=nke-controller
+   ```
+
+2. Start a shell in a debug container:
+
+   ```bash
+   kubectl debug -it -n nke-controller <POD> --profile=restricted --target=nke-controller --image=<DEBUG_IMAGE> -- sh
+   ```
+
+   Replace `<POD>` with the name from the previous step, and `<DEBUG_IMAGE>` with an image that has the tools you need, such as `curl` and `dig`. `--profile=restricted` runs the debug container without privileges, as the pod runs; without it, a namespace that enforces the `restricted` Pod Security Standard rejects the container.
+
+   The debug container runs as the pod's user, uid 65532, with no Linux capabilities, whatever user `<DEBUG_IMAGE>` declares. Choose an image whose tools work as an unprivileged user: `curl`, `dig` and `nslookup` do, while `tcpdump` and anything else that needs root or raw sockets does not.
+
+The debug container stays in the pod's spec, stopped, until the pod is replaced. Starting one needs permission to patch `pods/ephemeralcontainers` in the `nke-controller` namespace.
+
 ### Cluster and node state
 
 1. Read the conditions of a cluster that is not `Provisioned`. The `message` of each condition usually names the cause.
@@ -128,6 +158,12 @@ kubectl get deployment nke-controller -n nke-controller -o jsonpath='{.spec.temp
 - **Symptom:** `bootstrap cluster "nvkectl-bootstrap" from an earlier run is still running`.
 - **Cause:** An earlier run kept its seed cluster, which can hold the only copy of that cluster's etcd encryption key.
 - **Fix:** Save every `etcd-encryption-key-*` Secret the message lists, then delete the seed cluster as in the retry steps. Keep the `KIND_EXPERIMENTAL_PROVIDER=nerdctl` prefix, or `kind` deletes nothing and the next run stops on the same message.
+
+### The node CNI directory holds nerdctl network configs
+
+- **Symptom:** `/etc/cni/net.d already holds nerdctl network config(s), and this node's own containerd reads that directory for pod networking`, followed by the list of `nerdctl-*.conflist` files.
+- **Cause:** nerdctl ran as root on this host without `cni_netconfpath` set, so it wrote its network configs to `/etc/cni/net.d`. A node's containerd reads that directory for pod networking, and until the cluster's CNI plugin writes its own configuration, the first pods, CoreDNS among them, would get addresses on nerdctl's bridge.
+- **Fix:** List the bridges the files name with `grep -h '"bridge":' /etc/cni/net.d/nerdctl-*.conflist` before you remove them. Remove the files, delete each of those bridges with `ip link delete <BRIDGE>`, and set `cni_netconfpath = "/etc/containerd-nerdctl/net.d"` in `/etc/nerdctl/nerdctl.toml` so nerdctl keeps its networks out of that directory. Then run the bootstrap again.
 
 ### An etcd encryption key file already exists
 
