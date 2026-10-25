@@ -30,9 +30,10 @@ import (
 // earlier site keeps. The first that holds the ConfigMap is used.
 var authConfigNamespaces = []string{"nke-controller", "cloud-workflow-engine"}
 
-// authConfigMaps are the names the chart gives the authentication ConfigMap,
-// in the order they are searched: a greenfield site's name first, then the
-// name every earlier site keeps by pinning apiAuth.configMap.name. Every
+// authConfigMaps are the names charts from before apiAuth was the only source
+// gave the authentication ConfigMap, in the order they are searched: a
+// greenfield site's name first, then the name an earlier site kept by pinning
+// apiAuth.configMap.name. Every
 // (namespace, name) pair is tried, because a site that pins one of the two
 // need not have pinned the other.
 var authConfigMaps = []string{"nvke-auth-config", "nke-auth-config"}
@@ -315,8 +316,9 @@ func apiAuthAudience(configMap *corev1.ConfigMap, namespace, name string) (strin
 	if err := yaml.Unmarshal([]byte(raw), &config); err != nil {
 		return "", false, fmt.Errorf("parsing %q from controller ConfigMap %s/%s: %w", controllerConfigKey, namespace, name, err)
 	}
-	// Off or absent is not "authentication is off": the controller may still
-	// read a file at AUTH_CONFIG_PATH, which the caller looks for next.
+	// Off or absent is not "authentication is off": a controller from before
+	// apiAuth was the only source may still read a file at AUTH_CONFIG_PATH,
+	// which the caller looks for next.
 	if config.APIAuth == nil || !config.APIAuth.Enabled {
 		return "", false, nil
 	}

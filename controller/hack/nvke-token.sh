@@ -16,9 +16,10 @@
 #   NVKE_CONTROLLER_NAMESPACE  NVKE's namespace (default nke-controller when it
 #                              holds NVKE_AUTH_CONFIGMAP or Deployment nke-controller,
 #                              else cloud-workflow-engine)
-#   NVKE_AUTH_CONFIGMAP         authentication ConfigMap (default nvke-auth-config;
-#                              a site that pinned apiAuth.configMap.name sets
-#                              this to nke-auth-config)
+#   NVKE_AUTH_CONFIGMAP         authentication ConfigMap of a controller that
+#                              reads AUTH_CONFIG_PATH, from before apiAuth was the
+#                              only source (default nvke-auth-config; a site that
+#                              pinned the old name sets this to nke-auth-config)
 #   NKE_DEPLOYMENT             NVKE's Deployment (default nke-controller when it
 #                              exists in NVKE_CONTROLLER_NAMESPACE, else cloud-workflow-engine)
 #   NVKE_CONTROLLER_CONFIGMAP  NVKE's settings ConfigMap, read only when AUTH_CONFIG_PATH
@@ -70,9 +71,9 @@ fi
 
 # --- audience ---------------------------------------------------------------
 
-# Reads the audience from the authentication ConfigMap the live deployment
-# mounts at AUTH_CONFIG_PATH. A token minted for the wrong one
-# is rejected with a 401 that looks identical to sending no token at all.
+# Reads the audience from the authentication ConfigMap a controller from before
+# apiAuth was the only source mounts at AUTH_CONFIG_PATH. A token minted for the
+# wrong one is rejected with a 401 that looks identical to sending no token.
 #
 # Matching is any-of, so the first entry will do. Handles the flow and block
 # forms, and strips quotes that would otherwise land in the token's "aud".

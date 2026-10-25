@@ -4,37 +4,16 @@
 package authn
 
 import (
-	"bytes"
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
-	"os"
 	"slices"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
-	yamlv3 "gopkg.in/yaml.v3"
 	k8svalidation "k8s.io/apimachinery/pkg/api/validation"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	kjson "sigs.k8s.io/json"
-	"sigs.k8s.io/yaml"
-)
-
-// ErrEmptyPath is returned only when path is empty. A set-but-unreadable path is
-// a startup failure, never "disabled".
-var ErrEmptyPath = errors.New("authentication config path is empty")
-
-// The only apiVersion and kind this build accepts. Both are required, never
-// defaulted.
-const (
-	ConfigAPIVersion = "auth.nvke.nvidia.com/v1alpha1"
-	// ConfigAPIVersionLegacy is the spelling existing sites still mount. Both
-	// are read for one release; remove it with the other dual-accept windows.
-	ConfigAPIVersionLegacy = "auth.nke.nvidia.com/v1alpha1"
-	ConfigKind             = "AuthenticationConfiguration"
 )
 
 // allowedAlgorithms returns the permitted JWS algorithms, asymmetric only. Taken
@@ -55,11 +34,9 @@ func allowedAlgorithms() []string {
 	return algs
 }
 
-// Config is the issuer registry, read once at startup from the file at
-// AUTH_CONFIG_PATH or from apiAuth in nvke-controller-config.
+// Config is the issuer registry, read once at startup from apiAuth in
+// nvke-controller-config.
 type Config struct {
-	metav1.TypeMeta `json:",inline"`
-
 	// Audiences is the deployment-wide "aud" allow-list, required and non-empty
 	// even when every issuer overrides it. Matched any-of.
 	Audiences []string `json:"audiences"`
@@ -71,7 +48,7 @@ type Config struct {
 // Issuer is one trusted token issuer.
 type Issuer struct {
 	// Name is the operator-chosen label used in logs and metrics. Name and Issuer
-	// are each unique within the file.
+	// are each unique within the configuration.
 	Name   string `json:"name"`
 	Issuer string `json:"issuer"`
 
@@ -156,63 +133,9 @@ func (i Issuer) EffectiveAudiences(deploymentAudiences []string) []string {
 	return deploymentAudiences
 }
 
-// Load reads and validates the configuration at path. An unreadable file is an
-// error, never "authentication is disabled", or a typo'd mountPath would produce
-// a controller that starts cleanly and authenticates nobody. Authentication is
-// disabled only when AUTH_CONFIG_PATH is unset and apiAuth is not enabled in
-// nvke-controller-config.
-func Load(path string) (*Config, error) {
-	if strings.TrimSpace(path) == "" {
-		return nil, ErrEmptyPath
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("open authentication config %q: %w", path, err)
-	}
-
-	if err := requireSingleDocument(raw, path); err != nil {
-		return nil, err
-	}
-
-	// Decoded with sigs.k8s.io/json, NOT sigs.k8s.io/yaml.UnmarshalStrict, which
-	// ends in encoding/json and matches keys case-insensitively. There a rule
-	// carrying both pathPrefixes and pathprefixes is not a duplicate: the
-	// lowercase spelling wins and the file loads clean while admitting the whole
-	// trust domain.
-	jsonBytes, err := yaml.YAMLToJSONStrict(raw)
-	if err != nil {
-		return nil, fmt.Errorf("parse authentication config %q: %w", path, err)
-	}
-
-	var cfg Config
-	strictErrs, err := kjson.UnmarshalStrict(jsonBytes, &cfg)
-	if err != nil {
-		return nil, fmt.Errorf("parse authentication config %q: %w", path, err)
-	}
-	// Fatal, not advisory: UnmarshalStrict reports a duplicate and still keeps the
-	// winning value, so ignoring these would leave the widened rule in place.
-	if len(strictErrs) > 0 {
-		return nil, fmt.Errorf("parse authentication config %q: %w", path, errors.Join(strictErrs...))
-	}
-
-	// Properties of the file rather than of the configuration, so checked here
-	// and not in Validate.
-	if err := cfg.validateTypeMeta(); err != nil {
-		return nil, fmt.Errorf("invalid authentication config %q: %w", path, err)
-	}
-
-	if err := cfg.ValidateStartup(); err != nil {
-		return nil, fmt.Errorf("invalid authentication config %q: %w", path, err)
-	}
-	return &cfg, nil
-}
-
 // ValidateStartup runs every check a configuration must pass before the
 // controller serves with it: Validate, and an admit block on every issuer,
-// which Validate alone does not require. Load calls it after the checks that
-// belong to the file; nvke-controller-config's apiAuth section, which has no
-// file of its own, calls it directly.
+// which Validate alone does not require.
 func (c *Config) ValidateStartup() error {
 	if err := c.Validate(); err != nil {
 		return err
@@ -225,32 +148,6 @@ func (c *Config) ValidateStartup() error {
 				strings.TrimSpace(issuer.Name),
 			)
 		}
-	}
-	return nil
-}
-
-// requireSingleDocument refuses a file that is empty or holds more than one YAML
-// document. sigs.k8s.io/yaml has no streaming decoder and silently honors only
-// the first, so an appended stanza would have no error and no effect.
-func requireSingleDocument(raw []byte, path string) error {
-	dec := yamlv3.NewDecoder(bytes.NewReader(raw))
-
-	var first yamlv3.Node
-	if err := dec.Decode(&first); err != nil {
-		if errors.Is(err, io.EOF) {
-			// Named here because Validate would report it as a missing apiVersion
-			// and send the operator looking elsewhere.
-			return fmt.Errorf("authentication config %q is empty", path)
-		}
-		return fmt.Errorf("parse authentication config %q: %w", path, err)
-	}
-
-	var extra yamlv3.Node
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err != nil {
-			return fmt.Errorf("parse authentication config %q: %w", path, err)
-		}
-		return fmt.Errorf("authentication config %q contains more than one YAML document", path)
 	}
 	return nil
 }
@@ -321,28 +218,6 @@ func (c *Config) Validate() error {
 			)
 		}
 	}
-	return nil
-}
-
-// validateTypeMeta names the accepted value in both messages; "wrong" is usually
-// the wrong ConfigMap key mounted at AUTH_CONFIG_PATH.
-func (c *Config) validateTypeMeta() error {
-	switch apiVersion := strings.TrimSpace(c.APIVersion); apiVersion {
-	case ConfigAPIVersion, ConfigAPIVersionLegacy:
-	case "":
-		return fmt.Errorf("apiVersion is required; this build accepts %q or %q", ConfigAPIVersion, ConfigAPIVersionLegacy)
-	default:
-		return fmt.Errorf("apiVersion %q is not supported; this build accepts %q or %q", apiVersion, ConfigAPIVersion, ConfigAPIVersionLegacy)
-	}
-
-	switch kind := strings.TrimSpace(c.Kind); kind {
-	case ConfigKind:
-	case "":
-		return fmt.Errorf("kind is required; this build accepts %q", ConfigKind)
-	default:
-		return fmt.Errorf("kind %q is not supported; this build accepts %q", kind, ConfigKind)
-	}
-
 	return nil
 }
 

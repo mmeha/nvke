@@ -35,8 +35,8 @@ and apiAuth.permissive keys of its controller config ConfigMap, so the same scri
 covers every deployment. Override it with --mode.
 
 Scaffolding lives in deploy/k8s/nvke-auth-dev.yaml (namespaces, service accounts,
-token-minter RBAC, the auth ConfigMap). The chart mounts the config and binds the
-JWKS read permission.
+token-minter RBAC). The chart renders the configuration into apiAuth in the
+controller config ConfigMap and binds the JWKS read permission.
 
 Environment: KUBE_CONTEXT, NVKE_CONTROLLER_NAMESPACE, NVKE_AUTH_CONFIGMAP, NKE_DEPLOYMENT, NVKE_CONTROLLER_HTTP_PORT,
 NKE_HTTP_URL, NKE_METRICS_PORT, NKE_METRICS_LOCAL_PORT, NVKE_CONTROLLER_CONFIGMAP, PROBE_PATH,
@@ -98,14 +98,14 @@ need curl
 need yq
 
 if [[ -z "${NVKE_CONTROLLER_NAMESPACE}" ]]; then
-  # Same order nvkectl uses: the greenfield namespace if it holds the auth
-  # ConfigMap, else the legacy one. Only a confirmed absence falls back.
+  # The greenfield namespace if it holds the controller config ConfigMap, else
+  # the legacy one. Only a confirmed absence falls back.
   found="$(
-    "${KUBECTL[@]}" get configmap "${NVKE_AUTH_CONFIGMAP}" -n nke-controller \
+    "${KUBECTL[@]}" get configmap "${NVKE_CONTROLLER_CONFIGMAP}" -n nke-controller \
       --ignore-not-found -o name 2>&1
-  )" || die "cannot look up configmap nke-controller/${NVKE_AUTH_CONFIGMAP}: ${found}"
+  )" || die "cannot look up configmap nke-controller/${NVKE_CONTROLLER_CONFIGMAP}: ${found}"
   NVKE_CONTROLLER_NAMESPACE="cloud-workflow-engine"
-  grep -qx "configmap/${NVKE_AUTH_CONFIGMAP}" <<<"${found}" && NVKE_CONTROLLER_NAMESPACE="nke-controller"
+  grep -qx "configmap/${NVKE_CONTROLLER_CONFIGMAP}" <<<"${found}" && NVKE_CONTROLLER_NAMESPACE="nke-controller"
   export NVKE_CONTROLLER_NAMESPACE
 fi
 
@@ -119,8 +119,6 @@ missing=()
   || missing+=("serviceaccount ${ADMITTED_NS}/${ADMITTED_SA}")
 "${KUBECTL[@]}" get sa "${OUTSIDER_SA}" -n "${OUTSIDER_NS}" >/dev/null 2>&1 \
   || missing+=("serviceaccount ${OUTSIDER_NS}/${OUTSIDER_SA}")
-"${KUBECTL[@]}" get configmap "${NVKE_AUTH_CONFIGMAP}" -n "${NVKE_CONTROLLER_NAMESPACE}" >/dev/null 2>&1 \
-  || missing+=("configmap ${NVKE_CONTROLLER_NAMESPACE}/${NVKE_AUTH_CONFIGMAP}")
 if [[ ${#missing[@]} -gt 0 ]]; then
   printf 'FATAL: missing scaffolding:\n' >&2
   printf '  - %s\n' "${missing[@]}" >&2
@@ -134,7 +132,7 @@ NKE_DEPLOYMENT="$("${SCRIPT_DIR}/nvke-token.sh" --deployment)"
 
 # The audience comes from the live deployment, via nvke-token.sh.
 AUDIENCE="$("${SCRIPT_DIR}/nvke-token.sh" --audience)"
-[[ -n "${AUDIENCE}" ]] || die "could not read the audience from configmap ${NVKE_CONTROLLER_NAMESPACE}/${NVKE_AUTH_CONFIGMAP}"
+[[ -n "${AUDIENCE}" ]] || die "could not read the audience; run hack/nvke-token.sh --audience to see why"
 
 # --- mode detection -------------------------------------------------------
 
