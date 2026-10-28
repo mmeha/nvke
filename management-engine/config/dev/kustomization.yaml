@@ -11,3 +11,17 @@ resources:
 - infra-templates.yaml
 - ../crd
 - ../rbac
+
+# The REST dev processes reuse the manager's datastore identity.
+# This is only a placeholder for now and not what we should do in production.
+patches:
+- target:
+    kind: ClusterRole
+    name: manager-role
+  patch: |-
+    - op: add
+      path: /rules/-
+      value:
+        apiGroups: [internal.nvke.nvidia.com]
+        resources: [nvkeclusters, clusterreleases, machineimages]
+        verbs: [create, get, list, patch, delete]

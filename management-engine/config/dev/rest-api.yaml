@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Tilt instantiates this template once per surface, including its name and labels.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rest-api
+  namespace: management-engine-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rest-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rest-api
+    spec:
+      serviceAccountName: management-engine-controller-manager
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: api
+        image: management-engine:dev
+        command: [/rest-api]
+        args:
+        - --namespace=tenant-test
+        - --token-key-file=/etc/resource-tokens/key
+        ports:
+        - name: http
+          containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+        volumeMounts:
+        - name: resource-tokens
+          mountPath: /etc/resource-tokens
+          readOnly: true
+      volumes:
+      - name: resource-tokens
+        secret:
+          secretName: management-engine-rest-tokens

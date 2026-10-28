@@ -18,14 +18,65 @@ def register(ctx):
     k8s_resource(
         "management-engine-controller-manager",
         new_name="management-engine",
-        objects=["management-engine-controller-manager:serviceaccount"],
-        resource_deps=["nvke-controller"],
+        resource_deps=["nvke-controller", "management-engine-rest-config"],
         port_forwards=[metrics_port + ":8443"] if metrics_port else [],
         labels=["management-engine"],
         links=[
             link(controller_log_url + "nvkecluster%22", "NVKECluster logs"),
         ],
     )
+
+    # Preserve ETags and page tokens across restarts without committing a key.
+    key_file = os.path.join(ctx.provider_dir, ".local", "rest-token-key.b64")
+    local(["bash", "-c", """
+        set -euo pipefail
+        umask 077
+        mkdir -p "$(dirname "$1")"
+        if [ ! -e "$1" ]; then
+            openssl rand -base64 32 > "$1.tmp"
+            mv "$1.tmp" "$1"
+        fi
+    """, "--", key_file], quiet=True)
+    k8s_yaml(encode_yaml({
+        "apiVersion": "v1", "kind": "Secret",
+        "metadata": {"name": "management-engine-rest-tokens", "namespace": "management-engine-system"},
+        "type": "Opaque", "data": {"key": str(read_file(key_file)).strip()},
+    }))
+    k8s_yaml(encode_yaml({
+        "apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "tenant-test"},
+    }))
+    # Reconciliation reads the same infrastructure templates in the tenant namespace.
+    template = read_yaml(os.path.join(ctx.provider_dir, "config/dev/infra-templates.yaml"))
+    template["metadata"]["name"] = "management-engine-" + template["metadata"]["name"]
+    template["metadata"]["namespace"] = "tenant-test"
+    k8s_yaml(encode_yaml(template))
+    k8s_resource(
+        new_name="management-engine-rest-config",
+        objects=[
+            "management-engine-controller-manager:serviceaccount",
+            "management-engine-rest-tokens:secret:management-engine-system",
+            "tenant-test:namespace",
+            "management-engine-infra-templates:configmap:tenant-test",
+        ],
+        labels=["management-engine"],
+    )
+    for surface, port in [("tenant", 8082), ("operator", 8083)]:
+        name = "management-engine-" + surface + "-api"
+        api = read_yaml(os.path.join(ctx.provider_dir, "config/dev/rest-api.yaml"))
+        api["metadata"]["name"] = name
+        api["spec"]["selector"]["matchLabels"]["app.kubernetes.io/name"] = name
+        api["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/name"] = name
+        api["spec"]["template"]["spec"]["containers"][0]["args"] += [
+            "--surface=" + surface, "--datastore-id=tilt:" + ctx.kind_cluster_name,
+        ]
+        k8s_yaml(encode_yaml(api))
+        k8s_resource(
+            name,
+            resource_deps=["management-engine-rest-config"],
+            port_forwards=[port_forward(port, 8080, host="127.0.0.1")],
+            labels=["management-engine"],
+            links=[link("http://localhost:%d/v1/%s" % (port, "clusters" if surface == "tenant" else "cluster-releases"), surface + " API")],
+        )
     cmd_button(
         "management-engine-create-nvkecluster",
         argv=["bash", "-c", """
