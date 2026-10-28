@@ -97,6 +97,6 @@ cover them.
 ## What happens after validation
 
 `nvkectl` installs the charts the file names in the order it holds. Each chart
-gets the shared values from the embedded deploy directory (NKX-18922) plus an
+gets the shared values from the embedded stack directory (see PR #1996) plus an
 overlay rendered from the user's inputs: the site spec and the stack config.
 The overlay is to be implemented.
