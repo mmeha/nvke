@@ -73,6 +73,26 @@ Outputs with other names are dropped. NVKR's exports carry the `nvkectl`
 binaries, apt repositories and disk images next to these; `nvkectl` does not
 read them.
 
+### Where the names come from
+
+The names are the output names of NVKR's NVKE definition,
+`inputs/definitions/nvke/definition.yaml` in the `nvkr` repository, checked at
+commit `9686e3cd`. Eight of the nine required outputs are there under these
+names, with the kinds this table wants. A change to a name happens in that
+definition first and here second.
+
+What the definition does not have today:
+
+- `controller-profiles`. The definition has `nico-reference-profiles-fixture`,
+  which it describes as reference test data, not the runnable profiles. The
+  controller chart refuses to render without a profiles image, so this stays
+  required. An export of today's definition fails validation on it until
+  NVKR adds the output.
+- `nico` and `nico-prereqs`. These are third-party charts NVKE does not
+  build, like `postgresql` and `spire`. They are optional here. A seed that
+  runs NICo needs their pins in the file. Until NVKR passes them through, the
+  file is extended by hand with the two entries.
+
 ## Platforms
 
 The seed and the site may run on different architectures. One image name is
