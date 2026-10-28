@@ -132,6 +132,14 @@ type NodeConditions struct {
 	// up to date (False). Zero value (empty status) for nodes not managed by the
 	// control-plane controller.
 	ControlPlaneRolloutRequired Condition `json:"controlPlaneRolloutRequired"`
+	// ControlPlaneRebalanceReplacement marks a control-plane node the rebalance
+	// step surged to move the control plane onto a more-preferred instance type.
+	// While True, automatic scale-down neither counts the node toward surplus nor
+	// selects it as a victim, so the surge does not trigger a shrink and the node
+	// is not shed before it joins. The marker is self-resolving: once the node
+	// joins, the rebalance step sheds the old node and clears the marker; it dies
+	// with the node if the surge is abandoned.
+	ControlPlaneRebalanceReplacement Condition `json:"controlPlaneRebalanceReplacement"`
 }
 
 // NamedCondition pairs a condition with the name it carries in JSON.
@@ -165,6 +173,7 @@ func (c NodeConditions) All() []NamedCondition {
 		{"markedForRepair", c.MarkedForRepair},
 		{"teleportRegistered", c.TeleportRegistered},
 		{"controlPlaneRolloutRequired", c.ControlPlaneRolloutRequired},
+		{"controlPlaneRebalanceReplacement", c.ControlPlaneRebalanceReplacement},
 	}
 }
 

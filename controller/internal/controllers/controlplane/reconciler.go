@@ -130,6 +130,14 @@ func (r *reconciler) reconcile(ctx context.Context, cluster db.Cluster) error {
 		if joinInFlight {
 			return nil
 		}
+
+		// Steady-state rebalance: surge a more-preferred replacement (gated and
+		// one at a time), grow-before-shrink. The scale-down below sheds the old
+		// node once the surge joins. Lowest priority: it yields to the upgrade and
+		// rollout steps above by abandoning an in-flight surge.
+		if err := r.reconcileControlPlaneRebalance(ctx, cluster, controlPlane, allocator, provider.NewNodeProvider()); err != nil {
+			return fmt.Errorf("reconciling control plane rebalance: %w", err)
+		}
 	}
 
 	// Last, and records intent only: scale-up, remediation and rollout grow

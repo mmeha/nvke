@@ -459,6 +459,8 @@ func preserveClusterControlPlaneOverrides(existing Cluster, merged *ControlPlane
 	merged.MaxSurge = existing.ControlPlaneConfig.MaxSurge
 	// AutoScaleDownDisabled is cluster-level only, same as MaxSurge.
 	merged.AutoScaleDownDisabled = existing.ControlPlaneConfig.AutoScaleDownDisabled
+	// NodeRebalanceDisabled is cluster-level only, same as AutoScaleDownDisabled.
+	merged.NodeRebalanceDisabled = existing.ControlPlaneConfig.NodeRebalanceDisabled
 	merged.ProvisioningMonitorDisabled = existing.ControlPlaneConfig.ProvisioningMonitorDisabled
 
 	// The instance type preference an operator set on the cluster outranks the one
@@ -534,6 +536,14 @@ type ClusterConditions struct {
 	CertificateRenewal *CertificateRenewalStatus `json:"certificateRenewal,omitempty"`
 	EtcdKeyRotation    *EtcdKeyRotationStatus    `json:"etcdKeyRotation,omitempty"`
 	CredentialCSRs     *CredentialCSRObservation `json:"credentialCSRs,omitempty"`
+	// ControlPlaneRebalanceAttempted records when the controller last started a
+	// steady-state control-plane rebalance surge. The rebalance step reads its
+	// LastTransitionTime to rate-limit surge starts to one per
+	// rebalanceAttemptInterval, so a cluster whose preferred instance type is out
+	// of capacity re-probes on a slow, fixed cadence instead of churning a surge
+	// every surge timeout. It is a timestamp marker; the status is always true
+	// once an attempt has been recorded.
+	ControlPlaneRebalanceAttempted Condition `json:"controlPlaneRebalanceAttempted,omitempty"`
 }
 
 type ClusterFilters struct {
