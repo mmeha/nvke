@@ -21,6 +21,7 @@ the site-bootstrap and tenant-cluster pages below, which it will replace.
 | [operate/build-and-verify-node-image.md](operate/build-and-verify-node-image.md) | Building the reference node image from `os-image/`, booting it, and checking it with `nvke-os-image-check` |
 | [operate/prepare-nodes.md](operate/prepare-nodes.md) | Bringing the management cluster's nodes from first boot to what `nvkectl bootstrap site` requires |
 | [operate/bootstrap-management-cluster.md](operate/bootstrap-management-cluster.md) | Writing the site spec and running `nvkectl bootstrap site` |
+| [operate/install-management-plane.md](operate/install-management-plane.md) | Installing Cluster API and the `deploy/nico` deploy path on the management cluster, and admitting networks to the NVKE API |
 | [operate/provider-nico.md](operate/provider-nico.md) | Confirming the management plane can request machines from NICo, its credentials, and the NICo IDs a cluster request needs |
 | [operate/api-authentication.md](operate/api-authentication.md) | Turning on OIDC authentication for the NVKE API |
 | [workload-clusters/ovn-kubernetes.md](workload-clusters/ovn-kubernetes.md) | Building, self-hosting and deploying OVN-Kubernetes artifacts |
@@ -28,6 +29,7 @@ the site-bootstrap and tenant-cluster pages below, which it will replace.
 | [workload-clusters/access.md](workload-clusters/access.md) | Getting a workload cluster's admin kubeconfig, giving the customer access, and connecting with `kubectl` |
 | [workload-clusters/oidc.md](workload-clusters/oidc.md) | Making workload clusters accept tokens from the management plane and from your own OpenID Connect (OIDC) identity providers, and the identities they may not claim |
 | [workload-clusters/node-pools.md](workload-clusters/node-pools.md) | Adding, scaling and removing node pools |
+| [Workload cluster Kubernetes certificate renewal](../controller/docs/certificate-renewal.md) | Scheduled and forced leaf certificate renewal, failure diagnostics and ownership-checked recovery |
 | [operate/observe.md](operate/observe.md) | Metrics, dashboards, logs and status for NVKE and its clusters |
 | [operate/troubleshoot.md](operate/troubleshoot.md) | Symptoms, causes and fixes for common failures |
 
@@ -49,6 +51,7 @@ the site-bootstrap and tenant-cluster pages below, which it will replace.
 | [development.md](development.md) | The checks to run before opening a pull request, and which ones a laptop cannot reproduce |
 | [go-workspace.md](go-workspace.md) | The Go workspace, which modules are in it, and how to keep `go.work.sum` current |
 | [coverage-policy.md](coverage-policy.md) | What coverage is collected, what CI does with it, and why no threshold gates a merge |
+| [adrs/20261014-adr-conventions.md](adrs/20261014-adr-conventions.md) | Accepted decision on ADR scope, placement, format, and lifecycle |
 | [issue-triage.md](issue-triage.md) | How issues are triaged: the `needs-triage` and `priority/*` labels, who sets them, and what the automation does |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | How to get a change reviewed and merged |
 | [../.github/workflows/README.md](../.github/workflows/README.md) | How CI is wired, and the invariants a new workflow has to hold to |
@@ -74,6 +77,8 @@ the site-bootstrap and tenant-cluster pages below, which it will replace.
 |---|---|
 | [tenant-clusters/node-lifecycle.md](tenant-clusters/node-lifecycle.md) | What happens to a node through its life |
 | [tenant-clusters/kubernetes-api-access.md](tenant-clusters/kubernetes-api-access.md) | How operators, automation and Site Controller services reach and authenticate to tenant Kubernetes APIs |
+| [tenant-clusters/certificate-renewal.md](tenant-clusters/certificate-renewal.md) | Scheduled and forced T2 leaf renewal, preflight, terminal verification and recovery |
+| [tenant-clusters/kubelet-serving-certificates.md](tenant-clusters/kubelet-serving-certificates.md) | Kubelet-serving identity validation, CSR signing, installation and troubleshooting |
 | [../controller/docs/authenticating-to-the-api.md](../controller/docs/authenticating-to-the-api.md) | Authenticating to the API |
 | [../controller/docs/configuring-api-authentication.md](../controller/docs/configuring-api-authentication.md) | Turning API authentication on, including RBAC for `nvkectl` |
 | [design/README.md](design/README.md) | Design records and proposals; status is stated at the top of each |
@@ -89,6 +94,10 @@ the site-bootstrap and tenant-cluster pages below, which it will replace.
 | [operations/label-domain-migration.md](operations/label-domain-migration.md) | What the move to the `nvke.nvidia.com` label and annotation domain means for an existing site |
 | [site-operations/certificate-renewal.md](site-operations/certificate-renewal.md) | Site-management certificate renewal for NVKE fleet operators |
 | [operations/observability.md](operations/observability.md) | Temporal UI, CWE logs, database health, and CAPNICo diagnostics |
+| [operations/credential-lifecycle.md](operations/credential-lifecycle.md) | OSS alpha credential inventory, supported procedures, CA limits, monitoring, audit and evidence |
+| [../controller/docs/etcd-encryption-key-rotation.md](../controller/docs/etcd-encryption-key-rotation.md) | Existing T2 key rotation, phase-specific recovery and preexisting-object rewrite proof |
+| [../controller/docs/credential-monitoring.md](../controller/docs/credential-monitoring.md) | Actual expiry inspection, configuration bounds, metrics and alert delivery |
+| [../controller/docs/credential-audit.md](../controller/docs/credential-audit.md) | Versioned lifecycle audit, manual evidence tool, ledger export and retention limits |
 | [operations/faq.md](operations/faq.md) | Common bootstrap and tenant cluster failure modes |
 | [nktp/site-telemetry/getting-started.md](nktp/site-telemetry/getting-started.md) | Management cluster telemetry: what NKTP collects and what the deploy path needs |
 | [nktp/site-telemetry/configuration.md](nktp/site-telemetry/configuration.md) | What the site's NKTP values change, connecting a real backend, and overriding values safely |
@@ -162,6 +171,7 @@ Deeper module documentation:
 | Document | Contents |
 |---|---|
 | [../controller/test/e2e/README.md](../controller/test/e2e/README.md) | The end to end suite |
+| [../hack/rotation-demo/README.md](../hack/rotation-demo/README.md) | Credential renewal/key-rotation evidence collector (no live evidence included) |
 | [qualification/overview.md](qualification/overview.md) | Release qualification: what it is, what a run proves, and what is not covered yet |
 | [qualification/hardware-lane.md](qualification/hardware-lane.md) | How a candidate is qualified on real hardware, layer by layer |
 | [qualification/environments.md](qualification/environments.md) | Declaring the infrastructure a run can execute against |

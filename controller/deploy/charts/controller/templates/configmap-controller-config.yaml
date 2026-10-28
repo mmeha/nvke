@@ -16,6 +16,7 @@
 {{- if gt (len $oidcProviders) 5 }}
 {{- fail (printf "oidc.providers has %d entries; at most 5 are allowed" (len $oidcProviders)) }}
 {{- end }}
+{{- include "controller.validateCredentialMonitoring" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -60,6 +61,11 @@ data:
       controllerEnabled: {{ include "controller.controllerConfig.orGoDefault" (list .Values.scheduledMaintenance.certRenewal.enabled true) }}
       interval: {{ .Values.scheduledMaintenance.certRenewal.interval | default "12h" | quote }}
       thresholdDays: {{ include "controller.controllerConfig.orGoDefault" (list .Values.scheduledMaintenance.certRenewal.thresholdDays 30) | int }}
+    credentialMonitoring:
+      enabled: {{ include "controller.controllerConfig.orGoDefault" (list .Values.credentialMonitoring.enabled true) }}
+      inspectionInterval: {{ .Values.credentialMonitoring.inspectionInterval | default "1h" | quote }}
+      observationMaxAge: {{ .Values.credentialMonitoring.observationMaxAge | default "3h" | quote }}
+      warningDays: {{ include "controller.controllerConfig.orGoDefault" (list .Values.credentialMonitoring.warningDays 45) | int }}
     kubeadmImageRepository: {{ .Values.kubeadm.imageRepository | default "registry.k8s.io" | quote }}
     cniImageRegistry: {{ .Values.cni.imageRegistry | quote }}
     installCNIAfterInit: {{ .Values.cni.installAfterInit }}
@@ -129,13 +135,13 @@ data:
       acceptedManagedByLabelValues: {{ $teleport.acceptedManagedByLabelValues | default list | toJson }}
       tokenNamePrefix: {{ $teleport.tokenNamePrefix | default "nvke-controller-" | quote }}
       resourceGroupLabelValue: {{ $teleport.resourceGroupLabelValue | default "nvke" | quote }}
-    permissiveMode: {{ if .Values.apiAuth.enabled }}{{ .Values.apiAuth.permissive }}{{ else }}false{{ end }}
     {{- /*
     Where the controller reads API authentication when the chart renders the
     configuration. A ConfigMap managed elsewhere stays on AUTH_CONFIG_PATH, so
-    the section is off then. apiAuth.config goes in whole rather than key by key,
-    so a stray key reaches the controller's strict loader instead of vanishing
-    here.
+    the section is off then, though permissive still applies to that file. With
+    apiAuth.enabled false the chart sets no AUTH_CONFIG_PATH either, so
+    permissive is false. apiAuth.config goes in whole rather than key by key, so a stray key reaches
+    the controller's strict loader instead of vanishing here.
     */}}
     apiAuth:
       {{- if and .Values.apiAuth.enabled .Values.apiAuth.configMap.create }}
@@ -146,3 +152,4 @@ data:
       audiences: []
       issuers: []
       {{- end }}
+      permissive: {{ and .Values.apiAuth.enabled .Values.apiAuth.permissive }}

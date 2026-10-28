@@ -37,33 +37,33 @@ import (
 // and AUTH_CONFIG_PATH. The package tests hold the full classification and fail
 // when config.Config gains a field it does not cover.
 type Config struct {
-	AgentReadiness                           AgentReadinessConfig `json:"agentReadiness"`
-	FieldManager                             FieldManagerConfig   `json:"fieldManager"`
-	ManagedByLabelValue                      string               `json:"managedByLabelValue"`
-	ManagementNamespace                      string               `json:"managementNamespace"`
-	MetricsListenAddress                     string               `json:"metricsListenAddress"`
-	SupportedInfraProviders                  []string             `json:"supportedInfraProviders"`
-	NodeMetadataAllowlistedLabelKeys         []string             `json:"nodeMetadataAllowlistedLabelKeys"`
-	Tracing                                  TracingConfig        `json:"tracing"`
-	CertRenewal                              CertRenewalConfig    `json:"certRenewal"`
-	KubeadmImageRepository                   string               `json:"kubeadmImageRepository"`
-	CNIImageRegistry                         string               `json:"cniImageRegistry"`
-	InstallCNIAfterInit                      bool                 `json:"installCNIAfterInit"`
-	AllowLegacyCalicoClusterCreation         bool                 `json:"allowLegacyCalicoClusterCreation"`
-	NicoControllersEnabled                   bool                 `json:"nicoControllersEnabled"`
-	ProfilesDir                              string               `json:"profilesDir"`
-	RunbooksDir                              string               `json:"runbooksDir"`
-	TenantAccessEnabled                      bool                 `json:"tenantAccessEnabled"`
-	NodeAgent                                NodeAgentConfig      `json:"nodeAgent"`
-	OIDC                                     OIDCConfig           `json:"oidc"`
-	Temporal                                 TemporalConfig       `json:"temporal"`
-	Spire                                    SpireConfig          `json:"spire"`
-	Teleport                                 TeleportConfig       `json:"teleport"`
-	PermissiveMode                           bool                 `json:"permissiveMode"`
-	MachineMetadataAllowlistedLabelKeys      []string             `json:"machineMetadataAllowlistedLabelKeys"`
-	MachineMetadataAllowlistedAnnotationKeys []string             `json:"machineMetadataAllowlistedAnnotationKeys"`
-	AllowControlPlaneWithoutVIP              bool                 `json:"allowControlPlaneWithoutVIP"`
-	APIAuth                                  APIAuthConfig        `json:"apiAuth"`
+	AgentReadiness                           AgentReadinessConfig       `json:"agentReadiness"`
+	FieldManager                             FieldManagerConfig         `json:"fieldManager"`
+	ManagedByLabelValue                      string                     `json:"managedByLabelValue"`
+	ManagementNamespace                      string                     `json:"managementNamespace"`
+	MetricsListenAddress                     string                     `json:"metricsListenAddress"`
+	SupportedInfraProviders                  []string                   `json:"supportedInfraProviders"`
+	NodeMetadataAllowlistedLabelKeys         []string                   `json:"nodeMetadataAllowlistedLabelKeys"`
+	Tracing                                  TracingConfig              `json:"tracing"`
+	CertRenewal                              CertRenewalConfig          `json:"certRenewal"`
+	CredentialMonitoring                     CredentialMonitoringConfig `json:"credentialMonitoring"`
+	KubeadmImageRepository                   string                     `json:"kubeadmImageRepository"`
+	CNIImageRegistry                         string                     `json:"cniImageRegistry"`
+	InstallCNIAfterInit                      bool                       `json:"installCNIAfterInit"`
+	AllowLegacyCalicoClusterCreation         bool                       `json:"allowLegacyCalicoClusterCreation"`
+	NicoControllersEnabled                   bool                       `json:"nicoControllersEnabled"`
+	ProfilesDir                              string                     `json:"profilesDir"`
+	RunbooksDir                              string                     `json:"runbooksDir"`
+	TenantAccessEnabled                      bool                       `json:"tenantAccessEnabled"`
+	NodeAgent                                NodeAgentConfig            `json:"nodeAgent"`
+	OIDC                                     OIDCConfig                 `json:"oidc"`
+	Temporal                                 TemporalConfig             `json:"temporal"`
+	Spire                                    SpireConfig                `json:"spire"`
+	Teleport                                 TeleportConfig             `json:"teleport"`
+	MachineMetadataAllowlistedLabelKeys      []string                   `json:"machineMetadataAllowlistedLabelKeys"`
+	MachineMetadataAllowlistedAnnotationKeys []string                   `json:"machineMetadataAllowlistedAnnotationKeys"`
+	AllowControlPlaneWithoutVIP              bool                       `json:"allowControlPlaneWithoutVIP"`
+	APIAuth                                  APIAuthConfig              `json:"apiAuth"`
 }
 
 // FieldManagerConfig groups the Server-Side-Apply field manager names, mirroring
@@ -88,6 +88,14 @@ type CertRenewalConfig struct {
 	ControllerEnabled bool            `json:"controllerEnabled"`
 	Interval          metav1.Duration `json:"interval"`
 	ThresholdDays     int             `json:"thresholdDays"`
+}
+
+// CredentialMonitoringConfig groups the credential inspection settings in config.Config.
+type CredentialMonitoringConfig struct {
+	Enabled            bool            `json:"enabled"`
+	InspectionInterval metav1.Duration `json:"inspectionInterval"`
+	ObservationMaxAge  metav1.Duration `json:"observationMaxAge"`
+	WarningDays        int             `json:"warningDays"`
 }
 
 // NodeAgentConfig mirrors config.NodeAgentConfig, plus
@@ -246,6 +254,11 @@ type APIAuthConfig struct {
 	Enabled   bool           `json:"enabled"`
 	Audiences []string       `json:"audiences"`
 	Issuers   []authn.Issuer `json:"issuers"`
+
+	// Permissive evaluates and logs every authentication decision without
+	// acting on it. It applies to whichever source configures authentication,
+	// so it may be true while Enabled is false and AUTH_CONFIG_PATH is set.
+	Permissive bool `json:"permissive"`
 }
 
 // AuthConfig returns the section as the configuration authn.Setup takes, or nil
@@ -297,6 +310,9 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse controller config %q: %w", path, err)
 	}
+	if err := refuseMovedKeys(jsonBytes); err != nil {
+		return nil, fmt.Errorf("invalid controller config %q: %w", path, err)
+	}
 
 	var cfg Config
 	strictErrs, err := kjson.UnmarshalStrict(jsonBytes, &cfg)
@@ -332,6 +348,25 @@ func requireAPIAuth(jsonBytes []byte) error {
 	if raw, ok := top["apiAuth"]; !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return errors.New("apiAuth is required; set apiAuth.enabled to false to run without API authentication. " +
 			"A config.yaml without it comes from a chart older than this controller: deploy the chart and image together")
+	}
+	return nil
+}
+
+// movedPermissiveMode is the top-level key apiAuth.permissive replaced. Strict
+// decoding would refuse it as an unknown field without saying where it went.
+const (
+	movedPermissiveMode = "permissiveMode"
+)
+
+// refuseMovedKeys names the new home of a moved key the document still sets.
+func refuseMovedKeys(jsonBytes []byte) error {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(jsonBytes, &top); err != nil {
+		return fmt.Errorf("controller config: %w", err)
+	}
+	if _, ok := top[movedPermissiveMode]; ok {
+		return fmt.Errorf("%s moved to apiAuth.permissive; set it there. "+
+			"A config.yaml with %s comes from a chart older than this controller: deploy the chart and image together", movedPermissiveMode, movedPermissiveMode)
 	}
 	return nil
 }

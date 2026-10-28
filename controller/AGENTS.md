@@ -126,6 +126,7 @@ All metric names use the `nvke_controller_` prefix — never `cwe_` (legacy) (e.
 │   ├── server.gen.go       # Generated server interfaces
 │   └── client.gen.go       # Generated client
 ├── cmd/
+│   ├── credential-audit/   # Offline tool that records manual T1 credential audit evidence
 │   └── worker/             # Main CWE worker entrypoint
 ├── deploy/dashboards/      # Grafana reference JSON (import-only; see deploy/dashboards/AGENTS.md)
 ├── docs/                   # Developer guides (API authentication, BYO OS)
@@ -204,7 +205,7 @@ environment.
 | `LOG_LEVEL` | `info` | Log level (debug/info/warn/error) |
 | `DB_QUERY_LOG_VALUES` | `false` | Log each database query with its values, and PostgreSQL error messages. Off, a query is logged with a `?` for each value and an error by its code, because a query can carry operator-supplied content. |
 | `DB_CONNECTION_STRING` | `postgres://...` | PostgreSQL connection string |
-| `AUTH_CONFIG_PATH` | (unset) | API authentication config file, for a ConfigMap managed outside the chart (`apiAuth.configMap.create: false`). When the chart renders the configuration it sets no `AUTH_CONFIG_PATH`: the controller reads `apiAuth` from `nvke-controller-config`, and the chart still renders `nvke-auth-config` for `nvkectl` and `extraFiles`. With it unset and `apiAuth.enabled` false, authentication is off, which is what `make run` gets. Set but unreadable is a startup failure, never "disabled"; set together with `apiAuth.enabled` is a startup failure too. |
+| `AUTH_CONFIG_PATH` | (unset) | API authentication config file, for a ConfigMap managed outside the chart (`apiAuth.configMap.create: false`). When the chart renders the configuration it sets no `AUTH_CONFIG_PATH`: the controller reads `apiAuth` from `nvke-controller-config`, and the chart still renders `nvke-auth-config` for released `nvkectl` and `extraFiles`. With it unset and `apiAuth.enabled` false, authentication is off, which is what `make run` gets. Set but unreadable is a startup failure, never "disabled"; set together with `apiAuth.enabled` is a startup failure too. |
 
 Settings in the file that local work most often changes:
 
@@ -213,8 +214,8 @@ Settings in the file that local work most often changes:
 | `temporal.hostPort` | Temporal server for controller workflows |
 | `profilesDir` | Directory for config profiles and the runbooks their hooks reference. Fleet profile content is maintained outside this repository and supplied at deploy time; this repo ships only example profiles. The directory may be empty: the controller starts without a profiles tree, and one is needed to provision a node, not to come up. |
 | `spire.spiffeEnabled`, `spire.spiffeEndpointSocket` | SPIFFE identity, from the SPIRE agent socket (for example `unix:///tmp/spire-agent/agent.sock`) |
-| `permissiveMode` | Only read when authentication is on (`apiAuth.enabled` or `AUTH_CONFIG_PATH`). `true` evaluates, logs and counts every request, then serves it anyway — nothing is rejected. |
 | `apiAuth` | API authentication when the chart renders it: `enabled`, `audiences`, `issuers` (the `auth/authn` issuer schema). The section is required, and the chart always renders it; a file without it does not start. `enabled: false` with both lists empty is off. |
+| `apiAuth.permissive` | Applies to whichever source configures authentication, so it is read with `apiAuth.enabled` or with `AUTH_CONFIG_PATH`. `true` evaluates, logs and counts every request, then serves it anyway — nothing is rejected. It replaces the top-level `permissiveMode`, which the controller now refuses at startup. |
 
 To change one for your own runs, copy `hack/local-controller-config.yaml` under
 `.local/` and point `CONTROLLER_CONFIG_PATH` at the copy.

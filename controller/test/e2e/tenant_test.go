@@ -476,8 +476,11 @@ func nicoForgeTenant() testSpec {
 		//
 		// TPM attestation is the exception: it reads what the nodes already
 		// did to join, so it costs seconds, and this is the one lane whose
-		// machines attest with a hardware TPM.
-		validate: validations{provisioningOnly: true, tpmAttestation: true},
+		// machines attest with a hardware TPM. The tenant checks are the
+		// other: they read the cluster as built and run short-lived pods,
+		// minutes against the hour the tenant is held, and qualifying them on
+		// hardware is what they are for.
+		validate: validations{provisioningOnly: true, tpmAttestation: true, tenantChecks: true},
 	}
 }
 
@@ -659,6 +662,9 @@ func tenantSubtree(resolve managementResolver) func(spec testSpec) {
 				validateNvkectlPostCreate(&test)
 				validateNvkectlNodePoolLifecycle(&test)
 			}
+			if spec.validate.tenantChecks {
+				validateTenant(laneTenantTarget(&test, func() bool { return failed }), laneTenantSettings)
+			}
 		})
 
 		It("deletes the cluster", func(ctx context.Context) {
@@ -839,6 +845,9 @@ type validations struct {
 	// certificateRenewal forces certificate renewal on every control-plane node
 	// and verifies the cluster returns to Ready after each sequential restart.
 	certificateRenewal bool
+	// tenantChecks runs the validation image's tenant checks against the
+	// cluster, after every other post-create check.
+	tenantChecks bool
 	// tpmAttestation asserts every node's SPIRE agent attested to the
 	// management cluster by its TPM. Only for a backend whose machines have
 	// one; the spec carries the tpm-attestation label so a lane without a TPM

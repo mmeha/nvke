@@ -16,6 +16,19 @@ const (
 	BearerAuthScopes = "bearerAuth.Scopes"
 )
 
+// Defines values for CertificateRenewalStatusState.
+const (
+	CertificateRenewalStatusStateAccepted  CertificateRenewalStatusState = "accepted"
+	CertificateRenewalStatusStateFailed    CertificateRenewalStatusState = "failed"
+	CertificateRenewalStatusStateSucceeded CertificateRenewalStatusState = "succeeded"
+)
+
+// Defines values for CertificateRenewalStatusOutcome.
+const (
+	CertificateRenewalStatusOutcomeRenewed   CertificateRenewalStatusOutcome = "renewed"
+	CertificateRenewalStatusOutcomeUnchanged CertificateRenewalStatusOutcome = "unchanged"
+)
+
 // Defines values for ConditionStatus.
 const (
 	ConditionStatusFalse   ConditionStatus = "False"
@@ -39,6 +52,29 @@ const (
 const (
 	DiskSelectionStrategyCreateLargest  DiskSelectionStrategyCreate = "largest"
 	DiskSelectionStrategyCreateSmallest DiskSelectionStrategyCreate = "smallest"
+)
+
+// Defines values for EtcdKeyRotationStatusFailureReason.
+const (
+	EtcdKeyRotationStatusFailureReasonCanceled        EtcdKeyRotationStatusFailureReason = "canceled"
+	EtcdKeyRotationStatusFailureReasonOperationFailed EtcdKeyRotationStatusFailureReason = "operation_failed"
+)
+
+// Defines values for EtcdKeyRotationStatusPhase.
+const (
+	EtcdKeyRotationStatusPhaseAddSecondary   EtcdKeyRotationStatusPhase = "add_secondary"
+	EtcdKeyRotationStatusPhaseFinalize       EtcdKeyRotationStatusPhase = "finalize"
+	EtcdKeyRotationStatusPhasePrepare        EtcdKeyRotationStatusPhase = "prepare"
+	EtcdKeyRotationStatusPhasePromotePrimary EtcdKeyRotationStatusPhase = "promote_primary"
+	EtcdKeyRotationStatusPhaseRemoveOldKeys  EtcdKeyRotationStatusPhase = "remove_old_keys"
+	EtcdKeyRotationStatusPhaseRewrite        EtcdKeyRotationStatusPhase = "rewrite"
+)
+
+// Defines values for EtcdKeyRotationStatusState.
+const (
+	EtcdKeyRotationStatusStateFailed    EtcdKeyRotationStatusState = "failed"
+	EtcdKeyRotationStatusStateRunning   EtcdKeyRotationStatusState = "running"
+	EtcdKeyRotationStatusStateSucceeded EtcdKeyRotationStatusState = "succeeded"
 )
 
 // Defines values for LaunchLayerClusterProviderVpcType.
@@ -95,12 +131,53 @@ const (
 
 // Defines values for UpdateInProgressType.
 const (
-	UpdateInProgressTypeCpNodesRecycling  UpdateInProgressType = "cp_nodes_recycling"
-	UpdateInProgressTypeEtcdEncryption    UpdateInProgressType = "etcd_encryption"
-	UpdateInProgressTypeK8SUpgrade        UpdateInProgressType = "k8s_upgrade"
-	UpdateInProgressTypeOidcEnable        UpdateInProgressType = "oidc_enable"
-	UpdateInProgressTypeSpireServerUpdate UpdateInProgressType = "spire_server_update"
+	UpdateInProgressTypeCertificateRenewal UpdateInProgressType = "certificate_renewal"
+	UpdateInProgressTypeCpNodesRecycling   UpdateInProgressType = "cp_nodes_recycling"
+	UpdateInProgressTypeEtcdEncryption     UpdateInProgressType = "etcd_encryption"
+	UpdateInProgressTypeEtcdKeyRotation    UpdateInProgressType = "etcd_key_rotation"
+	UpdateInProgressTypeK8SUpgrade         UpdateInProgressType = "k8s_upgrade"
+	UpdateInProgressTypeOidcEnable         UpdateInProgressType = "oidc_enable"
+	UpdateInProgressTypeSpireServerUpdate  UpdateInProgressType = "spire_server_update"
 )
+
+// CertificateRenewalStatus The recorded lifecycle state and outcome of a certificate-renewal cycle.
+type CertificateRenewalStatus struct {
+	// CycleID The Temporal workflow ID that owns this certificate-renewal cycle.
+	CycleID string `json:"cycleID"`
+
+	// State The lifecycle state of the most recent certificate-renewal cycle.
+	State CertificateRenewalStatusState `json:"state"`
+
+	// Outcome Whether a successful cycle renewed certificates or found no certificates due.
+	Outcome *CertificateRenewalStatusOutcome `json:"outcome,omitempty"`
+
+	// Forced Whether the workflow was explicitly forced by an operator.
+	Forced bool `json:"forced"`
+
+	// ScheduledFor The scheduled due time associated with this cycle, when applicable.
+	ScheduledFor *time.Time `json:"scheduledFor,omitempty"`
+
+	// StartedAt When the workflow accepted the cycle and acquired the cluster mutation lock. Refused cycles record startedAt without holding the lock.
+	StartedAt time.Time `json:"startedAt"`
+
+	// CompletedAt When the cycle succeeded or failed.
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+
+	// FailedNodeID The control-plane node being processed when the cycle failed, when applicable.
+	FailedNodeID *openapi_types.UUID `json:"failedNodeID,omitempty"`
+
+	// Phase The workflow phase that failed, when applicable.
+	Phase *string `json:"phase,omitempty"`
+
+	// Message A bounded operator-facing failure summary.
+	Message *string `json:"message,omitempty"`
+}
+
+// CertificateRenewalStatusState The lifecycle state of the most recent certificate-renewal cycle.
+type CertificateRenewalStatusState string
+
+// CertificateRenewalStatusOutcome Whether a successful cycle renewed certificates or found no certificates due.
+type CertificateRenewalStatusOutcome string
 
 // CloudInitFile A file written by cloud-init on CAPI-backed nodes.
 type CloudInitFile struct {
@@ -152,6 +229,12 @@ type Cluster struct {
 	// CreatedAt Creation time.
 	CreatedAt time.Time `json:"createdAt"`
 
+	// NextCertRenewalDue The next scheduled certificate-renewal time. A value in the past is
+	// overdue unless a certificate-renewal operation is currently accepted.
+	// Unset until the controller first sees the cluster, which schedules
+	// the first check one renewal interval later.
+	NextCertRenewalDue *time.Time `json:"nextCertRenewalDue,omitempty"`
+
 	// Conditions Lifecycle conditions.
 	Conditions ClusterConditions `json:"conditions"`
 
@@ -176,6 +259,9 @@ type Cluster struct {
 
 // ClusterConditions Lifecycle conditions of a cluster. Each is a Condition.
 type ClusterConditions struct {
+	// CertificateRenewal The accepted, succeeded, or failed state of the most recent certificate-renewal cycle.
+	CertificateRenewal *CertificateRenewalStatus `json:"certificateRenewal,omitempty"`
+
 	// ControlPlaneUpgrading The control plane is being upgraded.
 	ControlPlaneUpgrading *Condition `json:"controlPlaneUpgrading,omitempty"`
 
@@ -184,6 +270,9 @@ type ClusterConditions struct {
 
 	// Deleting The cluster is being deleted.
 	Deleting Condition `json:"deleting"`
+
+	// EtcdKeyRotation The most recent etcd data-encryption-key rotation, including retained ownership after failure.
+	EtcdKeyRotation *EtcdKeyRotationStatus `json:"etcdKeyRotation,omitempty"`
 
 	// Provisioned The cluster is provisioned.
 	Provisioned Condition `json:"provisioned"`
@@ -260,6 +349,9 @@ type ConfigProfile struct {
 
 // ControlPlaneConfig The control-plane configuration in effect, including the desired node-agent version.
 type ControlPlaneConfig struct {
+	// AutoScaleDownDisabled When true, automatic control-plane scale-down is disabled, so decreasing desiredCount leaves the surplus nodes in place. When scale-down is enabled it never reduces the control plane below the fault-tolerant floor of three nodes.
+	AutoScaleDownDisabled *bool `json:"autoScaleDownDisabled,omitempty"`
+
 	// ConfigurationID ID of the current configuration snapshot.
 	ConfigurationID openapi_types.UUID `json:"configurationId,omitempty"`
 
@@ -426,6 +518,9 @@ type ControlPlaneStatus struct {
 // `nico` carries the NICo settings for the control-plane nodes; it is required
 // for a NICo cluster. `launchLayer` is required for a LaunchLayer cluster.
 type CreateClusterControlPlaneConfig struct {
+	// AutoScaleDownDisabled When true, automatic control-plane scale-down is disabled, so decreasing desiredCount leaves the surplus nodes in place. When scale-down is enabled it never reduces the control plane below the fault-tolerant floor of three nodes.
+	AutoScaleDownDisabled *bool `json:"autoScaleDownDisabled,omitempty"`
+
 	// DesiredCount The desired number of cluster-level control plane nodes. Must be at least 1. Values above 1 require controlPlaneVIP on the cluster unless the development-only allowControlPlaneWithoutVIP setting is enabled.
 	DesiredCount int `json:"desiredCount"`
 
@@ -610,6 +705,39 @@ type DiskSelectionStrategy string
 
 // DiskSelectionStrategyCreate Which disk the OS is installed on. Default smallest.
 type DiskSelectionStrategyCreate string
+
+// EtcdKeyRotationStatus Durable status and retained ownership of an etcd data-encryption-key rotation.
+type EtcdKeyRotationStatus struct {
+	// CompletedAt When the terminal success or failure was recorded.
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+
+	// FailureReason A bounded reason without keys, arbitrary error strings, or secret identifiers.
+	FailureReason *EtcdKeyRotationStatusFailureReason `json:"failureReason,omitempty"`
+
+	// LastProgressAt When a phase was entered or a terminal state was recorded. Polling does not advance it.
+	LastProgressAt time.Time `json:"lastProgressAt"`
+
+	// Phase The last entered phase, which a failure retains. A `prepare` failure releases the mutation lock, so start a new rotation workflow after fixing it; a failure in a later phase keeps the lock for recovery of the owning workflow.
+	Phase EtcdKeyRotationStatusPhase `json:"phase"`
+
+	// StartedAt When rotation ownership was accepted by the controller.
+	StartedAt time.Time `json:"startedAt"`
+
+	// State Whether the owned rotation is running, succeeded, or failed.
+	State EtcdKeyRotationStatusState `json:"state"`
+
+	// WorkflowID The Temporal workflow ID owning rotation and recovery. Never use as a metric label.
+	WorkflowID string `json:"workflowID"`
+}
+
+// EtcdKeyRotationStatusFailureReason A bounded reason without keys, arbitrary error strings, or secret identifiers.
+type EtcdKeyRotationStatusFailureReason string
+
+// EtcdKeyRotationStatusPhase The last entered phase, which a failure retains. A `prepare` failure releases the mutation lock, so start a new rotation workflow after fixing it; a failure in a later phase keeps the lock for recovery of the owning workflow.
+type EtcdKeyRotationStatusPhase string
+
+// EtcdKeyRotationStatusState Whether the owned rotation is running, succeeded, or failed.
+type EtcdKeyRotationStatusState string
 
 // GenericError Error response body.
 type GenericError struct {
@@ -1473,6 +1601,9 @@ type SpireServer struct {
 // allowControlPlaneWithoutVIP setting is enabled. maxSurge alone does not
 // trigger a rollout and remains mutable without a VIP.
 type UpdateClusterControlPlaneConfig struct {
+	// AutoScaleDownDisabled When true, automatic control-plane scale-down is disabled, so decreasing desiredCount leaves the surplus nodes in place. When scale-down is enabled it never reduces the control plane below the fault-tolerant floor of three nodes.
+	AutoScaleDownDisabled *bool `json:"autoScaleDownDisabled,omitempty"`
+
 	// DesiredCount The desired number of cluster-level control plane nodes. Must be at least 1.
 	// Increasing the count above 1 requires controlPlaneVIP on the cluster unless the development-only allowControlPlaneWithoutVIP setting is enabled.
 	DesiredCount *int `json:"desiredCount,omitempty"`
@@ -1546,8 +1677,17 @@ type UpdateClusterRequest struct {
 }
 
 // UpdateInProgress The mutually exclusive cluster operation in progress. Absent when none.
+// `etcd_key_rotation` is reported while an etcd data-encryption-key rotation
+// holds the lock, and also after a rotation that failed after `prepare`,
+// which keeps the lock until its owning workflow is recovered (see
+// `conditions.etcdKeyRotation`). A `prepare` failure releases the lock.
+// Exhaustive client switches over `type` must handle it.
 type UpdateInProgress struct {
-	// Type Operation in progress.
+	// Type Operation in progress. `certificate_renewal` is reported while a
+	// scheduled or forced certificate-renewal cycle holds the lock, and
+	// also after a failed cycle whose lock is retained until an operator
+	// clears it. Clients that switch exhaustively over this value must
+	// handle it.
 	Type UpdateInProgressType `json:"type"`
 
 	// Message Detail.
@@ -1557,7 +1697,11 @@ type UpdateInProgress struct {
 	StartedAt time.Time `json:"startedAt"`
 }
 
-// UpdateInProgressType Operation in progress.
+// UpdateInProgressType Operation in progress. `certificate_renewal` is reported while a
+// scheduled or forced certificate-renewal cycle holds the lock, and
+// also after a failed cycle whose lock is retained until an operator
+// clears it. Clients that switch exhaustively over this value must
+// handle it.
 type UpdateInProgressType string
 
 // UpdateNodePoolRequest All fields are optional. A provider payload that does not match the node pool's

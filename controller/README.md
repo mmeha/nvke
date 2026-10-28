@@ -79,7 +79,7 @@ Use the latest tagged version or a specific semver (e.g. `@v0.0.5`) as needed.
 ## Choose a Development Path
 
 - `CAPI + Tilt (recommended)`: bring up a local Kind management cluster with CAPD, then run `tilt up` for an end-to-end local stack.
-- `Manual local/remote worker run`: work on the CWE worker without the local CAPI management-cluster flow by using `make run-local` or `make run-remote`. `make run-local` installs the release CRDs and the fixture releases into the cluster in `KUBECONFIG` first (`make releases-install`); `make run-remote` installs nothing, so the cluster it reads must already have the releases (a fleet cluster gets them from Argo CD).
+- `Manual local/remote worker run`: work on the CWE worker without the local CAPI management-cluster flow by using `make run-local` or `make run-remote`. `make run-local` installs the release CRDs and the fixture releases into the cluster in `KUBECONFIG` first (`make releases-install`); `make run-remote` installs nothing, so the cluster it reads must already have the releases (a fleet cluster gets them from Argo CD). The process still exits when the Cluster API `Machine` CRD is missing: `make releases-install` does not install it, and `make capd-up` does.
 - `UI-only development`: port-forward a live CWE deployment and run the local UI dev server against it.
 
 For the controller-to-node-agent TLS/JWT transport configuration, see
@@ -97,10 +97,11 @@ Compatible profiles append those entries to their existing cloud-init
 `write_files` list and quote the metadata and content. CAPI serializes the same
 file model directly. In every mode, both paths replace `/etc/default/nvke-agent`
 with a plain-text configuration containing the node-agent port. External mTLS
-also writes the CA with `encoding: b64` and points the agent at it. Agents
-older than 0.3.0 get `/etc/nke/controller-ca.crt` and
-`--controller-client-ca-bundle`; agents at 0.3.0 or later get
-`/etc/nvke/controller-ca.crt` and `--nvke-controller-client-ca-bundle`. These
+also writes the CA with `encoding: b64` and points the agent at it with
+`--nvke-controller-client-ca-bundle`, so it requires node agent 0.3.0 or later.
+The CA lands at `/etc/nvke/controller-ca.crt` on a node whose agent reports
+0.3.0 or later, and at `/etc/nke/controller-ca.crt` otherwise, including a new
+node whose agent has not reported a version yet. These
 controller files follow any provider or profile files so the
 defaults win within `write_files`; NICo profiles and CAPI users may replace the
 agent configuration later through `runcmd` or `preKubeadmCommands`. The
@@ -176,7 +177,7 @@ tilt up
 ```
 
 - Tilt only runs against the expected Kind context (`kind-${KIND_CLUSTER_NAME}` or the current `kind-*` context if `KIND_CLUSTER_NAME` is unset).
-- Plain `tilt up` keeps the default CAPD-oriented provider set.
+- Plain `tilt up` keeps the default CAPD-oriented provider set and sets `controllers.nico.enabled=false`. Listing `nico` or `nico-vm` in `tilt_config.json` sets it to `true`; those providers install the `NicoMachine` CRD.
 - If you want to enable NICo for the local dev flow, set `providers` in
   `tilt_config.json` to include `"capi_core"`, `"bgp-containers"`, and
   `"nico"`. That one provider starts nico-sim and installs one CAPNICo
@@ -318,11 +319,12 @@ node's EK certificate through NICo, CAPNICo publishes the TPM EK pubhash on the
 SPIRE parent ID. The Machine SPIRE entry controller then reconciles the related
 cluster entry.
 
-There are two attestation modes in the local cluster-create paths today:
-- `join-token`
+There are three attestation modes in the local cluster-create paths, set with `nodeAgent.spireAttestationMethod`:
+- `joinToken`
 - `tpm`
+- `dsxImds` (see the `dsx-imds-attestation` provider above)
 
-The CAPI cluster creation path supports both modes. The Docker-based Forge flow
+The CAPI cluster creation path supports all three modes; `dsxImds` needs the DSX IMDS attestor plugin in the node image. The Docker-based Forge flow
 keeps the same TPM-shaped contracts as a real Forge node and swaps only the
 physical TPM for a software-backed vTPM chain:
 
@@ -560,9 +562,10 @@ For a step-by-step walkthrough of getting a token and calling the API, including
 what to check when you get an unexpected 401, see
 [Authenticating to the NVKE API](docs/authenticating-to-the-api.md).
 
-`tilt up` deploys an enforcing NVKE with the config in
-`deploy/k8s/nvke-auth-dev.yaml`, two client identities (one admitted, one not),
-and the binding described under RBAC Prerequisite.
+`tilt up` deploys an enforcing NVKE with the chart values in
+`hack/tilt-controller-api-auth-values.yaml`, the two client identities
+`deploy/k8s/nvke-auth-dev.yaml` creates (one admitted, one not), and the binding
+described under RBAC Prerequisite.
 
 `nvkectl` uses that admitted identity. After `nvkectl config set-site` with the
 kind kubeconfig, CWE commands mint tokens on their own. There is no token
@@ -615,17 +618,21 @@ apiAuth:
 When the chart renders the configuration (`configMap.create: true`), it puts it
 in the `apiAuth` section of `nvke-controller-config`, with `enabled: true`, and
 sets no `AUTH_CONFIG_PATH`. For a ConfigMap managed elsewhere it sets
-`AUTH_CONFIG_PATH` to the mounted file instead. `permissiveMode` in
-`nvke-controller-config` applies either way. Without the chart, set the
-`apiAuth` section of `nvke-controller-config` or `AUTH_CONFIG_PATH` (not both),
-and `permissiveMode`, directly. The `apiAuth` section must be present in
+`AUTH_CONFIG_PATH` to the mounted file instead. The chart renders
+`apiAuth.permissive` into the `apiAuth` section of `nvke-controller-config`, and
+it applies either way. Without the chart, set the `apiAuth` section of
+`nvke-controller-config` or `AUTH_CONFIG_PATH` (not both), and
+`apiAuth.permissive`, directly. `permissive` may be `true` while `enabled` is
+`false`, for a file at `AUTH_CONFIG_PATH`. A top-level `permissiveMode`, where
+the setting used to live, is refused at startup with a message naming
+`apiAuth.permissive`. The `apiAuth` section must be present in
 `nvke-controller-config` whichever you use: `enabled: false` with both lists
 empty runs without authentication, and a file with no section does not start.
 All of it is read at startup, so changing any of it needs a pod restart. The
 chart arranges that restart itself; see
 [Authentication Configuration](#authentication-configuration) below.
 
-| State | Configuration | `permissiveMode` | Result |
+| State | Configuration | `apiAuth.permissive` | Result |
 | --- | --- | --- | --- |
 | **Disabled** | `apiAuth.enabled` false and `AUTH_CONFIG_PATH` unset | — | Middleware is not in the chain. Every request served. The default. |
 | **Permissive** | `apiAuth.enabled` true, or `AUTH_CONFIG_PATH` set | `true` | Every request evaluated, logged and counted, then served anyway. |
@@ -655,11 +662,13 @@ Populate the configuration one of two ways: let the chart render it from
 `nvke-auth-config`, or supply your own ConfigMap named by
 `apiAuth.configMap.name` and leave `create` false, in which case NVKE reads it
 from the file mounted at `AUTH_CONFIG_PATH`. Either way the chart mounts
-`apiAuth.configMap.name` at `/etc/nke/auth`, and `nvkectl` reads the audience
-from it. Files a `jwks.caBundlePath` names land there too: through
-`apiAuth.configMap.extraFiles` when the chart renders the ConfigMap, or as keys
-you add to your own ConfigMap, since the chart refuses `extraFiles` without
-`create`. Setting `apiAuth.config` without `create`, or `create` without
+`apiAuth.configMap.name` at `/etc/nke/auth`. `nvkectl` reads the audience from
+`apiAuth` in `nvke-controller-config` when that section is enabled, and from
+`nvke-auth-config` otherwise. A private CA bundle is simplest inline, as
+`jwks.caBundle`. Files a `jwks.caBundlePath` names land in `/etc/nke/auth` too:
+through `apiAuth.configMap.extraFiles` when the chart renders the ConfigMap, or
+as keys you add to your own ConfigMap, since the chart refuses `extraFiles`
+without `create`. Setting `apiAuth.config` without `create`, or `create` without
 `apiAuth.config`, fails the render rather than quietly ignoring one of them.
 
 **The chart renders it** when `apiAuth.configMap.create` is true. Put the
@@ -699,14 +708,33 @@ the same values file as everything else and there is nowhere to put a loose
 manifest.
 
 The chart checks that `audiences` and `issuers` are present and refuses
-`apiVersion`, `kind` and `enabled` inside `apiAuth.config`. Everything else is
+`apiVersion`, `kind`, `enabled` and `permissive` inside `apiAuth.config`. Everything else is
 checked by the controller at startup, with `auth/authn`'s rules, which are
 strict and name the field at fault. A bad value becomes a `CrashLoopBackOff`
 rather than a failed render, so read the pod logs, not the Helm output.
 
-An issuer whose `jwks.uri` sits behind a private CA needs its bundle as a file
-in the same directory, which `extraFiles` puts there. The whole ConfigMap is
-mounted, so every key in it is a file at `/etc/nke/auth`:
+An issuer whose `jwks.uri` sits behind a private CA needs its bundle. Put the
+PEM inline as `jwks.caBundle`, which needs no file:
+
+```yaml
+apiAuth:
+  configMap:
+    create: true
+  config:
+    issuers:
+      - name: spire
+        jwks:
+          uri: "https://spire.example.internal:30443/keys"
+          caBundle: |
+            -----BEGIN CERTIFICATE-----
+            ...
+            -----END CERTIFICATE-----
+```
+
+`caBundle` and `caBundlePath` are alternatives; set at most one, and a
+`caBundle` with no PEM certificate in it is refused at startup. To keep the
+bundle as a file instead, `extraFiles` puts it in the same directory. The whole
+ConfigMap is mounted, so every key in it is a file at `/etc/nke/auth`:
 
 ```yaml
 apiAuth:
@@ -753,12 +781,14 @@ restart the pods yourself.
 
 With `create: true`, though, the copy the controller reads is `apiAuth` in
 `nvke-controller-config`: change the chart values, or edit that ConfigMap.
-`nvke-auth-config` is a copy for `nvkectl` and the files beside it, so editing it
-alone restarts the pods but changes nothing the controller enforces; only
-`nvkectl` sees the edit.
+`nvke-auth-config` is a copy for `nvkectl` releases that read only it, and for
+the files beside it, so editing it alone restarts the pods but changes nothing
+the controller enforces; current `nvkectl` reads `apiAuth` in
+`nvke-controller-config` first and does not see the edit either.
 
-`deploy/k8s/nvke-auth-dev.yaml` is a working example; the full schema and every
-validation rule live in `auth/authn/config.go`. The shape:
+`hack/tilt-controller-api-auth-values.yaml` is a working example, as chart
+values; the full schema and every validation rule live in
+`auth/authn/config.go`. The shape:
 
 ```yaml
 apiVersion: auth.nke.nvidia.com/v1alpha1
@@ -794,6 +824,7 @@ issuers:
     # audiences: ["https://nke-spire.example.internal"]
     jwks:
       uri: "https://nke.site-controller.internal:30443/keys"
+      # Or the PEM inline as caBundle; at most one of the two.
       caBundlePath: /etc/nke/spire-ca/ca.crt
     algorithms: [RS256]
     admit:

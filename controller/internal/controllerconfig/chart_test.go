@@ -79,6 +79,13 @@ func TestRenderedChart(t *testing.T) {
 			})
 			require.NoError(t, err)
 			fromFile.ApplyTo(&cfg)
+			// Explicit zero must survive rendering. The runtime policy only
+			// checks the bounds of an enabled feature, so a zero threshold
+			// under disabled renewal loads. Values the controller refuses are
+			// refused at render, so every render here must validate.
+			if strings.TrimSuffix(filepath.Base(render), ".yaml") == "explicit-false-and-zero" {
+				require.Zero(t, cfg.CertRenewalThresholdDays)
+			}
 			require.NoError(t, cfg.Validate())
 
 			// Both sources at once is a startup failure, so no render may produce it.
@@ -286,6 +293,7 @@ func TestLoadStartupConfig(t *testing.T) {
 // between a host-local run and a deployment.
 var localOnly = map[string]string{
 	"metricsListenAddress":       "a host-local controller keeps metrics on the loopback",
+	"nicoControllersEnabled":     "host-local runs do not install CAPNICo, so the NICo controllers stay off",
 	"profilesDir":                "host-local runs use the fixture profiles",
 	"runbooksDir":                "host-local runs use the fixture runbooks",
 	"spire.serverPort":           "the local SPIRE server port-forward, not the site's NodePort",

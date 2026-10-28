@@ -98,6 +98,11 @@ certRenewal:
   controllerEnabled: true
   interval: 12h
   thresholdDays: 30
+credentialMonitoring:
+  enabled: true
+  inspectionInterval: 1h
+  observationMaxAge: 3h
+  warningDays: 45
 kubeadmImageRepository: registry.k8s.io
 cniImageRegistry: ""
 installCNIAfterInit: false
@@ -171,11 +176,11 @@ teleport:
   managedByLabelValue: nke-cloud-workflow-engine
   tokenNamePrefix: nke-cwe-
   resourceGroupLabelValue: nke
-permissiveMode: false
 apiAuth:
   enabled: false
   audiences: []
   issuers: []
+  permissive: false
 `
 
 	cfg, err := controllerconfig.Load(writeConfig(t, full))
@@ -187,6 +192,10 @@ apiAuth:
 	assert.Equal(t, 12*time.Hour, cfg.CertRenewal.Interval.Duration)
 	assert.Equal(t, 30, cfg.CertRenewal.ThresholdDays)
 	assert.True(t, cfg.AllowLegacyCalicoClusterCreation)
+	assert.True(t, cfg.CredentialMonitoring.Enabled)
+	assert.Equal(t, time.Hour, cfg.CredentialMonitoring.InspectionInterval.Duration)
+	assert.Equal(t, 3*time.Hour, cfg.CredentialMonitoring.ObservationMaxAge.Duration)
+	assert.Equal(t, 45, cfg.CredentialMonitoring.WarningDays)
 	assert.Equal(t, "dsxImds", cfg.NodeAgent.SpireAttestationMethod)
 	assert.Equal(t, "acme", cfg.NodeAgent.DSXImds.OperatorTenant)
 	assert.Equal(t, exampleChecksum, cfg.NodeAgent.DSXImds.PluginChecksum)
@@ -1321,6 +1330,53 @@ func TestValidateAPIAuth(t *testing.T) {
 			assert.Equal(t, []string{"https://nke.example.internal"}, authCfg.Audiences)
 			require.Len(t, authCfg.Issuers, 1)
 			assert.Equal(t, "local-kubernetes", authCfg.Issuers[0].Name)
+		})
+	}
+}
+
+// permissive lives under apiAuth. It applies to whichever source configures
+// authentication, so it loads while the section is off, and the old top-level
+// key is refused with a pointer to the new one.
+func TestAPIAuthPermissive(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		config         string
+		wantPermissive bool
+		wantErr        string
+	}{
+		{name: "absent is enforcing", config: offAPIAuth},
+		{name: "set while off, for AUTH_CONFIG_PATH", config: offAPIAuth + "  permissive: true\n", wantPermissive: true},
+		{
+			name:           "set while on",
+			config:         "apiAuth:\n  enabled: true\n  permissive: true\n  audiences: [\"https://nke.example.internal\"]\n  issuers:" + apiAuthIssuer,
+			wantPermissive: true,
+		},
+		{
+			name:    "the top-level key names where it moved",
+			config:  offAPIAuth + "permissiveMode: true\n",
+			wantErr: "permissiveMode moved to apiAuth.permissive",
+		},
+		{
+			name:    "even when false",
+			config:  offAPIAuth + "permissiveMode: false\n",
+			wantErr: "permissiveMode moved to apiAuth.permissive",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := controllerconfig.Load(writeConfig(t, minimalConfigWithoutAPIAuth+tt.config))
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			var cfg config.Config
+			file.ApplyTo(&cfg)
+			assert.Equal(t, tt.wantPermissive, cfg.PermissiveMode)
 		})
 	}
 }

@@ -235,7 +235,7 @@ test-health: ## Run the health-labeled subset of the test/e2e suite against the 
 # is absent. test-authn-spire is the way to run only that one.
 #
 # The permissive specs have no target: they need an NVKE deployed with
-# permissiveMode: true, which is a different deployment. Run them against one
+# apiAuth.permissive: true, which is a different deployment. Run them against one
 # with `make test-e2e ARGS='--label-filter=authn-permissive'`.
 .PHONY: test-authn
 test-authn: ## Run the authn-labeled subset of the test/e2e suite against the cluster in KUBECONFIG.
@@ -569,3 +569,9 @@ notices-check: ## Verify THIRD_PARTY_NOTICES.md is up to date. (advisory; not in
 		git diff --name-only -- THIRD_PARTY_NOTICES.md; \
 		exit 1; \
 	fi
+
+##@ Credential monitoring
+
+.PHONY: credential-alerts-check
+credential-alerts-check: ## Validate credential rules, fixtures and chart render with the repository-pinned tools.
+	$(MAKE) -C .. credential-alerts-check

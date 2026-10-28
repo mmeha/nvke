@@ -6,9 +6,9 @@ NICo is NVKE's default infrastructure provider; LaunchLayer is also supported on
 
 ## Before you begin
 
-- You have completed [Run NVKE end to end on one machine](../get-started/local-site.md). That procedure installs CAPNICo in the `capnico-system` namespace and writes your NICo API details from the `nico` section of the stack config to the `nico-credentials` Secret, before it installs the management plane.
+- You have completed [Install the management plane](install-management-plane.md). That procedure installs CAPNICo in the `capnico-system` namespace and writes your NICo API details from the `nico` section of the stack config to the `nico-credentials` Secret, before it installs the management plane.
 - You have the management cluster kubeconfig, `<CLUSTER_NAME>.kubeconfig`, and `kubectl` on `PATH`. The kubeconfig must be able to read Secrets in the `capnico-system` namespace.
-- `nvkectl` points at your management plane, as set in [Run NVKE end to end on one machine](../get-started/local-site.md) with `nvkectl config set-site`. If API authentication is on, `nvkectl` uses an OpenID Connect (OIDC) kubeconfig, as described in [Secure the NVKE API](api-authentication.md), and `nvkectl get providers` fails with it, because it reads the management cluster's Kubernetes API, which does not accept your identity provider's tokens. The steps that use it give a `kubectl` alternative.
+- `nvkectl` points at your management plane, as set in [Install the management plane](install-management-plane.md) with `nvkectl config set-site`. If API authentication is on, `nvkectl` uses an OpenID Connect (OIDC) kubeconfig, as described in [Secure the NVKE API](api-authentication.md), and `nvkectl get providers` fails with it, because it reads the management cluster's Kubernetes API, which does not accept your identity provider's tokens. The steps that use it give a `kubectl` alternative.
 - In NICo, you have:
   - A site, with machines enrolled.
   - A virtual private cloud (VPC) in that site, and either VPC prefixes or subnets in it for the nodes.
@@ -42,14 +42,12 @@ export KUBECONFIG=$PWD/<CLUSTER_NAME>.kubeconfig
 2. Check that the management plane started its NICo controllers.
 
    ```bash
-   kubectl logs deployment/nke-controller -n nke-controller | grep 'NicoMachine CRD not installed'
+   kubectl -n nke-controller get deploy nke-controller
    ```
 
-   The command prints nothing. The management plane checks for the `NicoMachine` CRD once, when it starts, and the install puts CAPNICo in place first. If the command prints the message, CAPNICo was installed after the management plane started: restart the management plane.
+   The Deployment is ready. This install enables the NICo controllers, and the process exits at startup when the `NicoMachine` CRD is missing, so a ready Deployment means those controllers started.
 
-   ```bash
-   kubectl rollout restart deployment/nke-controller -n nke-controller
-   ```
+   If it is not ready, the pod state and log name the failure. When the log is the `NicoMachine` exit, install CAPNICo or set `controllers.nico.enabled` to `false`. The pod retries on its own.
 
 `CONFIGURED` does not mean the credentials work. The `CREDENTIALS` column of `nvkectl get providers` reports whether they do, from the check CAPNICo runs on them every few minutes, but only with a CAPNICo release that serves `NicoIdentity` and a `NicoIdentity` that names `nico-credentials`. The CAPNICo release this procedure installs does not serve `NicoIdentity`, so `CREDENTIALS` reads `UNSUPPORTED`. CAPNICo still checks the token against the NICo API, but only when it reconciles a `NicoCluster` that belongs to a Cluster API `Cluster`, which normally first happens when you create a workload cluster. [Infrastructure providers](https://github.com/dsx-ai-factory/nvke/blob/main/cli/README.md#infrastructure-providers) lists every `CREDENTIALS` value.
 

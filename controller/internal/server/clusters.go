@@ -75,6 +75,13 @@ func (e *updateInProgressError) Error() string {
 	if e.message != "" {
 		msg += " (" + e.message + ")"
 	}
+	if e.op == db.OperationTypeCertRenewal {
+		msg += "; a failed certificate renewal can retain the lock until an operator clears it (see controller/docs/certificate-renewal.md)"
+	}
+	if e.op == db.OperationTypeEtcdKeyRotation {
+		msg += "; a rotation that fails after prepare keeps the lock until its workflow is reset and completes " +
+			"(see controller/docs/etcd-encryption-key-rotation.md#phase-aware-recovery)"
+	}
 	return msg
 }
 
@@ -210,6 +217,9 @@ func (s *clusterService) CreateCluster(ctx context.Context, req api.CreateCluste
 			dbCluster.ControlPlaneConfig.DesiredCount = req.Body.ControlPlaneConfig.DesiredCount
 			if req.Body.ControlPlaneConfig.MaxSurge != nil {
 				dbCluster.ControlPlaneConfig.MaxSurge = *req.Body.ControlPlaneConfig.MaxSurge
+			}
+			if req.Body.ControlPlaneConfig.AutoScaleDownDisabled != nil {
+				dbCluster.ControlPlaneConfig.AutoScaleDownDisabled = *req.Body.ControlPlaneConfig.AutoScaleDownDisabled
 			}
 		}
 
@@ -909,6 +919,10 @@ func (s *clusterService) applyClusterControlPlaneConfigUpdate(ctx context.Contex
 		}
 		cluster.ControlPlaneConfig.MaxSurge = *req.MaxSurge
 	}
+	// AutoScaleDownDisabled is cluster-level only, same as MaxSurge.
+	if req.AutoScaleDownDisabled != nil {
+		cluster.ControlPlaneConfig.AutoScaleDownDisabled = *req.AutoScaleDownDisabled
+	}
 	controlPlaneConfigSpec := db.ConfigSpecFromFull(cluster.ControlPlaneConfig)
 	// KubernetesVersion lives in the spec row and should track the current
 	// cluster control-plane version selected in this PATCH.
@@ -1137,12 +1151,14 @@ func dedupeUUIDsPreserveOrder(ids []uuid.UUID) []uuid.UUID {
 
 func apiControlPlaneConfigFromDB(cfg db.ControlPlaneConfig) *api.ControlPlaneConfig {
 	maxSurge := cfg.MaxSurge
+	autoScaleDownDisabled := cfg.AutoScaleDownDisabled
 	provisioningMonitorDisabled := cfg.ProvisioningMonitorDisabled
 	teleportEnabled := cfg.TeleportEnabled
 	return &api.ControlPlaneConfig{
 		ConfigurationID:             cfg.ConfigurationID,
 		DesiredCount:                cfg.DesiredCount,
 		MaxSurge:                    &maxSurge,
+		AutoScaleDownDisabled:       &autoScaleDownDisabled,
 		ProvisioningMonitorDisabled: &provisioningMonitorDisabled,
 		SystemReservedMemory:        cfg.SystemReservedMemory,
 		NodeLabels:                  maps.Clone(cfg.NodeLabels),
@@ -1313,6 +1329,49 @@ func APIClusterFromDB(dbCluster *db.Cluster) api.Cluster {
 		updateFailed := apiConditionFromDB(*dbCluster.Conditions.UpdateFailed)
 		conditions.UpdateFailed = &updateFailed
 	}
+	// Project the recorded cycle separately from UpdateInProgress: a failed cycle
+	// can still own the mutation lock. Empty optional diagnostics remain absent;
+	// overdue status is derived by consumers from NextCertRenewalDue.
+	if status := dbCluster.Conditions.CertificateRenewal; status != nil {
+		apiStatus := api.CertificateRenewalStatus{
+			CycleID:      status.CycleID,
+			State:        api.CertificateRenewalStatusState(status.State),
+			Forced:       status.Forced,
+			ScheduledFor: status.ScheduledFor,
+			StartedAt:    status.StartedAt,
+			CompletedAt:  status.CompletedAt,
+			FailedNodeID: status.FailedNodeID,
+		}
+		if status.Outcome != "" {
+			outcome := api.CertificateRenewalStatusOutcome(status.Outcome)
+			apiStatus.Outcome = &outcome
+		}
+		if status.Phase != "" {
+			phase := status.Phase
+			apiStatus.Phase = &phase
+		}
+		if status.Message != "" {
+			message := status.Message
+			apiStatus.Message = &message
+		}
+		conditions.CertificateRenewal = &apiStatus
+	}
+
+	if status := dbCluster.Conditions.EtcdKeyRotation; status != nil {
+		apiStatus := api.EtcdKeyRotationStatus{
+			WorkflowID:     status.WorkflowID,
+			State:          api.EtcdKeyRotationStatusState(status.State),
+			Phase:          api.EtcdKeyRotationStatusPhase(status.Phase),
+			StartedAt:      status.StartedAt,
+			LastProgressAt: status.LastProgressAt,
+			CompletedAt:    status.CompletedAt,
+		}
+		if status.FailureReason != "" {
+			reason := api.EtcdKeyRotationStatusFailureReason(status.FailureReason)
+			apiStatus.FailureReason = &reason
+		}
+		conditions.EtcdKeyRotation = &apiStatus
+	}
 
 	return api.Cluster{
 		ID:                            dbCluster.ID,
@@ -1329,7 +1388,8 @@ func APIClusterFromDB(dbCluster *db.Cluster) api.Cluster {
 			PodCIDR:     dbCluster.PodCIDR,
 			ServiceCIDR: dbCluster.ServiceCIDR,
 		},
-		CreatedAt: dbCluster.CreatedAt,
+		CreatedAt:          dbCluster.CreatedAt,
+		NextCertRenewalDue: dbCluster.NextCertRenewalDue,
 
 		Nico:        apiNicoClusterProviderFromDB(dbCluster.Nico),
 		Infra:       apiInfraClusterProviderFromDB(dbCluster.Capi),

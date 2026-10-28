@@ -159,28 +159,62 @@ nvkectl config view
 ```
 
 `--url` is the controller's API. Port 30080 is the plain-HTTP NodePort the chart exposes, and the CLI sends a bearer token to it, so use it from a trusted network only, or put a TLS endpoint in front of it and name that. `--kubeconfig` is the site cluster's kubeconfig; `get
-providers` and `get kubeconfig` read the cluster directly and need it.
+providers` and `get kubeconfig` read the cluster directly and need it. Each `set-site` call replaces the whole entry for `--name`, so repeat every setting you want to keep, and makes that site the current one. `nvkectl config use-site <name>` switches between configured sites.
+
+#### Export a site's telemetry
+
+To send the spans and log records of the commands that use this site (`get`,
+`create`, `patch`, `delete` and the like) to an OpenTelemetry collector or
+backend, add its OTLP/gRPC address to the same `set-site` call:
+
+```bash
+nvkectl config set-site --name my-tier0-site \
+  --url http://<VIP>:30080 \
+  --kubeconfig ./my-tier0-site.kubeconfig \
+  --otlp-endpoint <COLLECTOR_HOST>:4317
+```
+
+- **Removing it.** Run `set-site` again without `--otlp-endpoint`.
+- **TLS.** The connection uses TLS. For an endpoint without it, use `http://` or
+  pass `--otlp-insecure`, which needs `--otlp-endpoint` in the same call.
+- **Headers.** They come only from `OTEL_EXPORTER_OTLP_HEADERS` in the shell
+  that runs the command and are never stored in the config.
+- **A bad endpoint or an unreachable collector.** `set-site` rejects an endpoint
+  that is not a usable OTLP/gRPC address with an error and stores nothing. A
+  collector that cannot be reached when a command runs does not fail it: the
+  command succeeds and logs one warning.
+- **Precedence.** The site's endpoint takes precedence over
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, which applies to commands that have no site
+  endpoint. The `--otlp-endpoint` and `--otlp-insecure` flags of `bootstrap site`
+  apply to that command only; the commands above never read them. See
+  [Send nvkectl's telemetry to a backend](bootstrap-troubleshooting.md#send-nvkectls-telemetry-to-a-backend)
+  for `bootstrap site`.
 
 Controller API commands (`get`/`create`/`patch`/`delete` clusters) use that
-kubeconfig to authenticate: they read the audience from the authentication
-ConfigMap and mint a TokenRequest for `nke-clients/nke-client`. Two names are
-searched, in each of `nke-controller` and then `cloud-workflow-engine`:
+kubeconfig to authenticate: they read the audience and mint a TokenRequest for
+`nke-clients/nke-client`. The audience comes first from `apiAuth` in the
+controller's settings ConfigMap, `nvke-controller-config` (or
+`nke-controller-config` on a site that pins the older name), when that section
+is enabled. When it is off or absent, as for a controller that reads
+`AUTH_CONFIG_PATH`, the CLI falls back to the authentication ConfigMap:
 `nvke-auth-config` first, then `nke-auth-config`, which a site installed before
-the `nvke` rename keeps by pinning `apiAuth.configMap.name`. The first *readable*
-one is used.
+the `nvke` rename keeps by pinning `apiAuth.configMap.name`. Each pair of names
+is searched in `nke-controller` and then `cloud-workflow-engine`, and the first
+*readable* one is used.
 
 Readable matters because RBAC scoped to `resourceNames` denies the names it does
 not grant: a site that grants `get` on its pinned name alone answers Forbidden
 for the other. The search moves past such a denial to the next candidate, so a
 kubeconfig that can read only the pinned ConfigMap still mints a token.
 
-The CLI sends no bearer token only when neither name is found in either
-namespace; that is read as authentication being off. A denial is not that — it
-is kept, and if no candidate turns out to be readable the command fails with it
+The CLI sends no bearer token only when nothing readable turns authentication
+on; that is read as authentication being off. A denial is not that — it is
+kept, and if nothing readable turns authentication on the command fails with it
 rather than sending a bare request the controller would reject.
 
 The kubeconfig identity needs `create` on `serviceaccounts/token` for
-`nke-client`. See
+`nke-client`, and `get` on the controller's settings ConfigMap and the
+authentication ConfigMap. See
 [Configuring NVKE API Authentication](../../controller/docs/configuring-api-authentication.md).
 
 ### 7. Check the infrastructure providers

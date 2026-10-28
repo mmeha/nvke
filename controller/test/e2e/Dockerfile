@@ -4,7 +4,9 @@
 # The E2E suite as an image, for validating a running site from inside its
 # cluster, under an in-cluster test runner. It carries the whole suite and runs
 # the specs NVKE_SITE_VALIDATE and NVKE_TENANT_VALIDATE select, the site's by
-# default: specs that change nothing on the site.
+# default: specs that install and change nothing lasting on the site or the
+# tenant. Those labeled creates, and the DNS probe, make short-lived objects in
+# the probe namespace and delete them.
 #
 # Build from the REPOSITORY ROOT, so the context includes controller/api,
 # which go.mod replaces with a relative path:
@@ -21,7 +23,7 @@
 # compare its digest with the one the release attested. `make
 # validate-image-push` passes the args and flags; "Building the image yourself"
 # in README.md lists them.
-ARG GOLANG_IMAGE=docker.io/golang:1.27.3@sha256:957861185dbf29d93668ace41e011d091c6e779953d47f0316ef2cc58e28fe2b
+ARG GOLANG_IMAGE=docker.io/golang:1.27.3@sha256:f20d83a83e18dbd2a4714b8ffd4b30b287b6243962dd75608e86abcc63ba4efc
 ARG ALPINE_IMAGE=docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 # On the build platform, cross-compiling, so a multi-arch build needs no
@@ -86,11 +88,22 @@ LABEL org.opencontainers.image.licenses="Apache-2.0" \
 #
 # -test.run because the binary also carries the module's unit tests, some of
 # which need a git checkout. The JUnit report is the suite's, which lists only
-# the selected specs; report.json is Ginkgo's, with every spec.
+# the selected specs; report.json is Ginkgo's, with every spec. A spec still
+# running after two minutes reports its current step and stack every minute,
+# so a hung wait shows where it is rather than only its final error.
+#
+# -ginkgo.timeout because Ginkgo's default is an hour: a healthy site finishes
+# well inside it, but on a broken one every check waits out its own limit,
+# which together run past two hours, and the checks still to run when the
+# suite times out are reported as interrupted, not as what they found. A
+# caller's own -ginkgo.timeout, given later, wins.
 ENTRYPOINT ["/usr/local/bin/e2e.test", \
     "-test.run=^TestE2E$", \
+    "-ginkgo.timeout=3h", \
     "-e2e.junit-report=/artifacts/junit-test-report.xml", \
     "-ginkgo.json-report=/artifacts/report.json", \
     "-ginkgo.silence-skips", \
     "-ginkgo.no-color", \
+    "-ginkgo.poll-progress-after=2m", \
+    "-ginkgo.poll-progress-interval=1m", \
     "-ginkgo.v"]

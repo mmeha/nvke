@@ -243,6 +243,18 @@ type Config struct {
 	// CertRenewalThresholdDays is passed to the certificate-renewal runbook.
 	CertRenewalThresholdDays int `controllerconfig:"certRenewal.thresholdDays"`
 
+	// CredentialMonitoringEnabled enables read-only credential inspection independently of renewal.
+	CredentialMonitoringEnabled bool `controllerconfig:"credentialMonitoring.enabled"`
+
+	// CertificateInspectionInterval is the interval between node certificate inspections.
+	CertificateInspectionInterval time.Duration `controllerconfig:"credentialMonitoring.inspectionInterval"`
+
+	// CertificateObservationMaxAge is the oldest observation that still counts as fresh.
+	CertificateObservationMaxAge time.Duration `controllerconfig:"credentialMonitoring.observationMaxAge"`
+
+	// CertificateWarningDays is how many days before expiry a certificate is reported as expiring.
+	CertificateWarningDays int `controllerconfig:"credentialMonitoring.warningDays"`
+
 	// NVKESiteControllerName is the name of the site controller
 	NVKESiteControllerName string `env:"NKE_SITE_CONTROLLER_NAME"`
 
@@ -403,7 +415,7 @@ type Config struct {
 	// PermissiveMode evaluates and logs authentication and admission decisions
 	// without enforcing them, so no request is rejected. No effect while
 	// authentication is off: AuthConfigPath unset and apiAuth.enabled false.
-	PermissiveMode bool `controllerconfig:"permissiveMode"`
+	PermissiveMode bool `controllerconfig:"apiAuth.permissive"`
 
 	// Tracing configures the export of OpenTelemetry spans to an OTLP collector.
 	Tracing TracingConfig
@@ -593,6 +605,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.validateDBCredentials(); err != nil {
+		return err
+	}
+	if err := c.validateCredentialMonitoring(); err != nil {
 		return err
 	}
 	if c.SpireServerAPIAddress == "" {
