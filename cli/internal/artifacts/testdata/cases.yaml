@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Each entry names a file under testdata/ and the result the loader must
+# return for it. `expect: ok` means the file loads. Any other value is a
+# substring of the error message.
+
+- file: valid.yaml
+  expect: ok
+- file: cases/valid-nico-absent.yaml
+  expect: ok
+- file: cases/missing-schema-version.yaml
+  expect: 'schemaVersion is required'
+- file: cases/unknown-schema-version.yaml
+  expect: 'unsupported schemaVersion "nvke.dev/artifacts/v9"'
+- file: cases/missing-required-output.yaml
+  expect: 'required output "spire" is missing'
+- file: cases/duplicate-arch.yaml
+  expect: 'outputs.cwe[1]: arch "amd64" appears twice'
+- file: cases/ref-without-digest.yaml
+  expect: 'outputs.cwe[0]: ref has no digest'
+- file: cases/ref-and-path.yaml
+  expect: 'outputs.controller-profiles[0]: ref and path are both set'
+- file: cases/neither-ref-nor-path.yaml
+  expect: 'outputs.cwe[0]: one of ref or path is required'
+- file: cases/path-missing.yaml
+  expect: 'outputs.controller-profiles[0]: path "layouts/does-not-exist" does not exist'
+- file: cases/bad-arch.yaml
+  expect: 'outputs.cwe[0]: unknown arch "x86_64"'
+- file: cases/image-without-arch.yaml
+  expect: 'outputs.cwe[0]: arch is required'
+- file: cases/chart-with-arch.yaml
+  expect: 'outputs.spire[0]: arch is not allowed on a chart'
+- file: cases/chart-without-version.yaml
+  expect: 'outputs.temporal[0]: chartVersion is required'
+- file: cases/chart-version-out-of-range.yaml
+  expect: 'outputs.postgresql[0]: chartVersion "17.0.0" is outside the supported range'
+- file: cases/unknown-top-level-key.yaml
+  expect: 'unknown key "images"'
+- file: cases/unknown-output.yaml
+  expect: 'unknown output "grafana"'
+- file: cases/not-yaml.yaml
+  expect: 'not valid YAML'
