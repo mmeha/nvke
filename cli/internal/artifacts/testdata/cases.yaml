@@ -1,17 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Each entry names a file under testdata/ and the result the loader must
-# return for it. `expect: ok` means the file loads. Any other value is a
+# Each entry names a file under testdata/ and the result the validator must
+# return for it. `expect: ok` means the file validates. Any other value is a
 # substring of the error message. `platform` is the target platform the
-# loader checks image outputs against. It defaults to linux/amd64.
+# validator checks image outputs against. It defaults to linux/amd64.
+#
+# Decoding is covered by file_test.go. The entries here are for the
+# validator, which follows in a later change.
 
 - file: valid.json
   expect: ok
 - file: valid.json
   platform: linux/arm64
   expect: 'outputs[name=controller-profiles]: no manifest for platform linux/arm64'
+- file: cases/minimal-hand-written.json
+  expect: ok
 - file: cases/valid-nico-absent.json
+  expect: ok
+- file: cases/valid-source-absent.json
   expect: ok
 - file: cases/valid-extra-outputs-and-keys.json
   expect: ok
@@ -21,10 +28,6 @@
   expect: 'required output "cwe" is missing'
 - file: cases/not-json.json
   expect: 'not valid JSON'
-- file: cases/missing-schema-version.json
-  expect: 'schemaVersion is required'
-- file: cases/unknown-schema-version.json
-  expect: 'unsupported schemaVersion "nvkr.dev/release-description/v9"'
 - file: cases/duplicate-output-name.json
   expect: 'outputs[name=cwe]: appears twice'
 - file: cases/missing-required-output.json
@@ -47,5 +50,3 @@
   expect: 'outputs[name=temporal]: chartVersion is missing'
 - file: cases/chart-version-out-of-range.json
   expect: 'outputs[name=postgresql]: chartVersion "17.0.0" is outside the supported range'
-- file: cases/source-missing.json
-  expect: 'outputs[name=cwe]: no evidence carries a source'

@@ -1,58 +1,54 @@
 # Artifact file contract
 
-The artifact file is an NVKR release description: the output of
-`nvkr release export`, unmodified. `nvkectl` reads it as is. No converter
-exists and no NVKE-specific schema exists.
+The artifact file lists every image and chart that `nvkectl` installs on the
+seed and on the site. It is the only source of images and charts. The stack
+config names no images. `nvkectl` knows which outputs it expects, by name,
+and refuses a file that lacks one.
 
-The file lists every image and chart that `nvkectl` installs on the seed and
-on the site. It is the only source of images and charts. The stack config
-names no images. `nvkectl` knows which outputs it expects, by name, and
-refuses a file that lacks one.
+The contract is the Go type `File` in `file.go`. The file is a JSON object.
+`nvkectl` decodes the fields of `File` and drops everything else. Where the
+document comes from does not matter. `nvkr release export` produces one that
+satisfies the contract unmodified. A build that does not use NVKR writes the
+same fields by hand; `testdata/cases/minimal-hand-written.json` is the
+smallest such file.
 
-NVKR owns the schema. `nvkectl` reads a subset of the document and ignores
-the rest. NVKR adds fields and outputs that NVKE does not use, such as the
-`nvkectl` binaries, apt repositories and disk images. An unknown key or an
-unknown output name is not an error. An unknown `schemaVersion` is.
+## What nvkectl decodes
 
-## Encoding
-
-JSON. The exporter has one format.
-
-```sh
-nvkr release export --layout <dir> --reference <registry>/<repo>@sha256:<digest> > artifacts.json
-```
-
-## What nvkectl reads
-
-| Field | Meaning |
-| --- | --- |
-| `schemaVersion` | Must be `nvkr.dev/release-description/v1`. |
-| `rootDigest` | The release's identity. Recorded in the install record. |
-| `outputs[]` | A list sorted by `name`, one entry per output. `nvkectl` looks an output up by `name`. |
-| `evidence[]` | One SBOM entry per output. The source of an output lives here. |
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `outputs[]` | yes | A list of images and charts. `nvkectl` looks an output up by `name`. |
+| `rootDigest` | no | The release's identity. Recorded in the install record when present. |
+| `evidence[]` | no | Where the source of an output lives. Read for the install record only. |
 
 Per output:
 
-| Key | Meaning |
-| --- | --- |
-| `name` | The lookup key. See the table of outputs. |
-| `kind` | `oci` for an image, `helm-oci` for a chart. Any other kind on an NVKE output is an error. |
-| `reference` | Where to pull from. NVKR always pins it with `@sha256:<64 hex>`. The install uses nothing else. |
-| `os`, `arch` | Present on a single-platform image. |
-| `imageIndex` | Present on a multi-platform image. `requiredPlatforms` and `children[].platform` say which platforms it serves. |
-| `chartVersion` | Present on a chart. |
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | The lookup key. See the table of outputs. |
+| `kind` | yes | `oci` for an image, `helm-oci` for a chart. |
+| `reference` | yes | The OCI reference the install pulls from. It must carry `@sha256:<64 hex>`. |
+| `os`, `arch` | image | The platform of a single-platform image. |
+| `imageIndex.children[].platform` | image | The platforms of a multi-platform image. One of `os`/`arch` or `imageIndex` is present. |
+| `chartVersion` | chart | The chart version. |
 
 Per evidence entry:
 
 | Key | Meaning |
 | --- | --- |
 | `binding.outputs[]` | The outputs this entry describes. |
-| `source.repo`, `source.commit` | The checkout the subject was built from. Present on NVKE-built subjects. |
+| `source.repo`, `source.commit` | The checkout the subject was built from. |
 
-There is no release-wide source. Each source describes its own subject, and
+Every other key in the document, at any level, is dropped at decode time.
+`nvkr release export` emits many more: the inspection summary, the release
+reference, the publisher's qualification, per-output digests, build digests,
+components and artifact types, and SBOM digests. `nvkectl` reads none of
+them, so it does not decode them. A key NVKR adds later is dropped the same
+way. A `schemaVersion`, when present, is not checked.
+
+There is no release-wide source. A source describes its own subject, and
 `nvkectl` reads it per output. The install record carries the source of every
-output that has one. The `cwe` output must have one. Third-party charts have
-none.
+output that has one. A file without `evidence` installs; its record then has
+no source.
 
 The Cluster API version is not in the file. The `nvkectl` build pins it, one
 number for Cluster API core, the kubeadm providers and `clusterctl`.
@@ -72,6 +68,10 @@ number for Cluster API core, the kubeadm providers and `clusterctl`.
 | `temporal` | `helm-oci` | yes | Temporal chart. |
 | `nico` | `helm-oci` | no | NICo chart. Its presence selects NICo on the seed. |
 | `nico-prereqs` | `helm-oci` | no | NICo prerequisites chart. Required when `nico` is present. |
+
+Outputs with other names are dropped. NVKR's exports carry the `nvkectl`
+binaries, apt repositories and disk images next to these; `nvkectl` does not
+read them.
 
 ## Platforms
 
@@ -106,39 +106,38 @@ The ranges below are placeholders. The build sets the real ranges.
 
 ## Install record
 
-`nvkectl` writes the sha256 digest of the file and the file's `rootDigest`
-into the install record. The seed and the site then provably used the same
-release.
+`nvkectl` writes the sha256 digest of the file into the install record, with
+`rootDigest` and the per-output sources when the file has them. The seed and
+the site then provably used the same file.
 
 ## Validation
 
 `nvkectl` validates the file before it installs anything. The checks run in
 this order and stop at the first failure:
 
-1. The file is JSON and `schemaVersion` is the one above.
+1. The file is JSON.
 2. Every output name appears once. Every required output is present.
    `nico-prereqs` is present when `nico` is.
 3. Every NVKE output has the kind its role needs. Its `reference` is present
    and carries a digest.
 4. Every image output serves the target platform.
 5. Every chart version is in the supported range.
-6. `cwe` has a source in `evidence[]`.
-7. Every reference resolves. The registry is reachable.
-8. `helm template` of each chart with the embedded values, then a server-side
+6. Every reference resolves. The registry is reachable.
+7. `helm template` of each chart with the embedded values, then a server-side
    dry run against the target cluster.
-9. Cluster preconditions: a default StorageClass, cert-manager and Cluster API
+8. Cluster preconditions: a default StorageClass, cert-manager and Cluster API
    CRDs, image access, nodes able to attest, a VIP that resolves.
 
 A failure on one output names it as `outputs[name=<name>]`, for example
 `outputs[name=cwe]: reference has no digest`. A failure on the document as a
-whole names the key. Every failure points the user to `nvkr` or to this
-document.
+whole names the key. Every failure points the user to this document.
 
-Steps 1 to 6 need no network and no cluster. The test cases under `testdata/`
-cover them, including two unmodified exports from NVKR's own test fixtures.
-Those two carry no NVKE output, so the only error they may produce is the
-missing required output. Any other error means this contract has drifted from
-the exporter.
+Steps 1 to 5 need no network and no cluster. `testdata/cases.yaml` lists the
+expected result for every test file. `file_test.go` covers decoding, including
+two unmodified exports from NVKR's own test fixtures under `testdata/nvkr/`.
+Those two carry no NVKE output, so the only validation error they may produce
+is the missing required output. Any other error means the contract has
+drifted from the exporter.
 
 ## What happens after validation
 
