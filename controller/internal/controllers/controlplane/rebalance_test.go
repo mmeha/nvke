@@ -105,13 +105,6 @@ func TestReconcileControlPlaneRebalance_SurgesMorePreferredReplacement(t *testin
 		created = *node
 		return isRebalanceReplacement(*node) && node.ControlPlaneConfigurationID == cappedID
 	})).Return(db.Node{}, nil)
-	// Starting a surge stamps the cooldown on the cluster.
-	mockTx.On("GetCluster", mock.Anything, clusterID).Return(cluster, nil)
-	var recorded db.Cluster
-	mockTx.On("UpdateCluster", mock.Anything, mock.MatchedBy(func(c *db.Cluster) bool {
-		recorded = *c
-		return true
-	})).Return(db.Cluster{}, nil)
 
 	r := newRebalanceReconciler(mockTx)
 	cp := &controlPlane{nodes: nodesList, clusterControlPlaneConfig: cluster.ControlPlaneConfig}
@@ -122,8 +115,9 @@ func TestReconcileControlPlaneRebalance_SurgesMorePreferredReplacement(t *testin
 	mockTx.AssertNumberOfCalls(t, "CreateNode", 1)
 	assert.True(t, isRebalanceReplacement(created), "the surge node carries the rebalance marker")
 	assert.Equal(t, cappedID, created.ControlPlaneConfigurationID, "the surge is pinned to the capped snapshot")
-	assert.Equal(t, db.ConditionStatusTrue, recorded.Conditions.ControlPlaneRebalanceAttempted.Status, "the surge is recorded to start the cooldown")
-	assert.False(t, recorded.Conditions.ControlPlaneRebalanceAttempted.LastTransitionTime.IsZero(), "the attempt carries a timestamp")
+	// A successful surge is progress, not a failure: it records no backoff, so the
+	// next round (once the surge joins and sheds) follows without waiting.
+	mockTx.AssertNotCalled(t, "UpdateCluster", mock.Anything, mock.Anything)
 }
 
 // TestReconcileControlPlaneRebalance_NoOps covers the gates that must surge
@@ -157,10 +151,10 @@ func TestReconcileControlPlaneRebalance_NoOps(t *testing.T) {
 		ControlPlaneConfig: db.ControlPlaneConfig{ConfigurationID: configID, DesiredCount: 3},
 	}
 
-	// A less-preferred node exists, but a surge was started within the cooldown
-	// window, so the step waits rather than churning another.
+	// A less-preferred node exists, but a surge was abandoned for lack of capacity
+	// within the backoff window, so the step waits rather than churning another.
 	coolingDown := rebalanceCluster(clusterID, configID, []uuid.UUID{primaryType, worseType}, true, false)
-	coolingDown.Conditions.ControlPlaneRebalanceAttempted = db.NewCondition(true, "recent surge")
+	coolingDown.Conditions.ControlPlaneRebalanceBackoff = db.NewCondition(true, "recent abandoned surge")
 
 	tests := []struct {
 		name    string
@@ -170,7 +164,7 @@ func TestReconcileControlPlaneRebalance_NoOps(t *testing.T) {
 		{name: "flag off", cluster: rebalanceCluster(clusterID, configID, []uuid.UUID{primaryType, worseType}, false, false), nodes: unbalanced},
 		{name: "provider has no ranker", cluster: capiCluster, nodes: unbalanced},
 		{name: "already balanced on the primary type", cluster: rebalanceCluster(clusterID, configID, []uuid.UUID{primaryType, worseType}, true, false), nodes: balanced},
-		{name: "cooling down after a recent surge", cluster: coolingDown, nodes: unbalanced},
+		{name: "backing off after an abandoned surge", cluster: coolingDown, nodes: unbalanced},
 	}
 
 	for _, tt := range tests {
@@ -192,8 +186,9 @@ func TestReconcileControlPlaneRebalance_NoOps(t *testing.T) {
 	}
 }
 
-// TestRebalanceCoolingDown pins the surge rate-limit: a surge started within
-// rebalanceAttemptInterval blocks another, and the window reopens once it elapses.
+// TestRebalanceCoolingDown pins the re-probe backoff: a surge abandoned for lack
+// of capacity within rebalanceBackoffInterval blocks another, and the window
+// reopens once it elapses.
 func TestRebalanceCoolingDown(t *testing.T) {
 	t.Parallel()
 
@@ -202,10 +197,10 @@ func TestRebalanceCoolingDown(t *testing.T) {
 		last time.Time
 		want bool
 	}{
-		{name: "never attempted", last: time.Time{}, want: false},
-		{name: "just surged", last: time.Now(), want: true},
-		{name: "within the interval", last: time.Now().Add(-rebalanceAttemptInterval + time.Minute), want: true},
-		{name: "interval elapsed", last: time.Now().Add(-rebalanceAttemptInterval - time.Minute), want: false},
+		{name: "never abandoned", last: time.Time{}, want: false},
+		{name: "just abandoned", last: time.Now(), want: true},
+		{name: "within the interval", last: time.Now().Add(-rebalanceBackoffInterval + time.Minute), want: true},
+		{name: "interval elapsed", last: time.Now().Add(-rebalanceBackoffInterval - time.Minute), want: false},
 	}
 
 	for _, tt := range tests {
@@ -214,7 +209,7 @@ func TestRebalanceCoolingDown(t *testing.T) {
 
 			var cluster db.Cluster
 			if !tt.last.IsZero() {
-				cluster.Conditions.ControlPlaneRebalanceAttempted = db.Condition{
+				cluster.Conditions.ControlPlaneRebalanceBackoff = db.Condition{
 					Status:             db.ConditionStatusTrue,
 					LastTransitionTime: tt.last,
 				}
@@ -414,6 +409,71 @@ func TestReconcileControlPlaneRebalance_AbandonsSurgeOnUpgrade(t *testing.T) {
 
 	assert.True(t, nodes.IsDeleting(written), "the surge is torn down to yield to the upgrade")
 	mockTx.AssertNumberOfCalls(t, "CreateWorkflowOutboxEntry", 1)
+	mockTx.AssertNotCalled(t, "CreateNode", mock.Anything, mock.Anything)
+	// Yielding to an upgrade is a priority preemption, not a capacity failure, so
+	// it records no backoff: rebalance resumes as soon as the upgrade clears.
+	mockTx.AssertNotCalled(t, "UpdateCluster", mock.Anything, mock.Anything)
+}
+
+// TestReconcileControlPlaneRebalance_BacksOffWhenSurgeHasNoCapacity pins the
+// backoff rule: a surge that never joins within the timeout is abandoned for lack
+// of capacity and records a backoff, so the next round re-probes slowly instead of
+// churning a surge every timeout.
+func TestReconcileControlPlaneRebalance_BacksOffWhenSurgeHasNoCapacity(t *testing.T) {
+	t.Parallel()
+
+	clusterID := uuid.New()
+	configID := uuid.New()
+	cappedID := uuid.New()
+	base := time.Now()
+	primaryType := uuid.New()
+	worseType := uuid.New()
+	cluster := rebalanceCluster(clusterID, configID, []uuid.UUID{primaryType, worseType}, true, false)
+
+	// A surge that has been coming up longer than the timeout: no capacity.
+	surge := healthyCPNode(clusterID, "cp-surge", base)
+	surge.ControlPlaneConfigurationID = cappedID
+	surge.Conditions.Joined = db.NewCondition(false, "Not joined")
+	surge.Conditions.Pending = db.Condition{
+		Status:             db.ConditionStatusTrue,
+		Message:            "Pending",
+		LastTransitionTime: time.Now().Add(-defaultRebalanceSurgeTimeout - time.Minute),
+	}
+	surge.Conditions.ControlPlaneRebalanceReplacement = db.NewCondition(true, "Rebalance surge")
+	nodesList := []db.Node{
+		cpNodeOnType(clusterID, configID, "cp-a", primaryType, base),
+		cpNodeOnType(clusterID, configID, "cp-b", primaryType, base),
+		cpNodeOnType(clusterID, configID, "cp-c", primaryType, base),
+		surge,
+	}
+
+	mockTx := &testutil.MockTx{}
+	mockTx.On("GetNodeForUpdate", mock.Anything, surge.ID).Return(surge, nil)
+	mockTx.On("GetClusterForUpdate", mock.Anything, clusterID).Return(cluster, nil)
+	var written db.Node
+	mockTx.On("UpdateNode", mock.Anything, mock.MatchedBy(func(node *db.Node) bool {
+		written = *node
+		return true
+	})).Return(surge, nil)
+	mockTx.On("CreateWorkflowOutboxEntry", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(db.WorkflowOutbox{}, nil)
+	// The abandonment records the backoff on the cluster.
+	mockTx.On("GetCluster", mock.Anything, clusterID).Return(cluster, nil)
+	var recorded db.Cluster
+	mockTx.On("UpdateCluster", mock.Anything, mock.MatchedBy(func(c *db.Cluster) bool {
+		recorded = *c
+		return true
+	})).Return(db.Cluster{}, nil)
+
+	r := newRebalanceReconciler(mockTx)
+	cp := &controlPlane{nodes: nodesList, clusterControlPlaneConfig: cluster.ControlPlaneConfig}
+
+	err := r.reconcileControlPlaneRebalance(context.Background(), cluster, cp, domainAllocator{}, nil)
+	require.NoError(t, err)
+
+	assert.True(t, nodes.IsDeleting(written), "the stuck surge is torn down")
+	assert.Equal(t, db.ConditionStatusTrue, recorded.Conditions.ControlPlaneRebalanceBackoff.Status, "a no-capacity abandonment records the backoff")
+	assert.False(t, recorded.Conditions.ControlPlaneRebalanceBackoff.LastTransitionTime.IsZero(), "the backoff carries a timestamp")
 	mockTx.AssertNotCalled(t, "CreateNode", mock.Anything, mock.Anything)
 }
 

@@ -536,14 +536,13 @@ type ClusterConditions struct {
 	CertificateRenewal *CertificateRenewalStatus `json:"certificateRenewal,omitempty"`
 	EtcdKeyRotation    *EtcdKeyRotationStatus    `json:"etcdKeyRotation,omitempty"`
 	CredentialCSRs     *CredentialCSRObservation `json:"credentialCSRs,omitempty"`
-	// ControlPlaneRebalanceAttempted records when the controller last started a
-	// steady-state control-plane rebalance surge. The rebalance step reads its
-	// LastTransitionTime to rate-limit surge starts to one per
-	// rebalanceAttemptInterval, so a cluster whose preferred instance type is out
-	// of capacity re-probes on a slow, fixed cadence instead of churning a surge
-	// every surge timeout. It is a timestamp marker; the status is always true
-	// once an attempt has been recorded.
-	ControlPlaneRebalanceAttempted Condition `json:"controlPlaneRebalanceAttempted,omitempty"`
+	// ControlPlaneRebalanceBackoff records when the controller last abandoned a
+	// rebalance surge for lack of preferred capacity; the step reads its
+	// LastTransitionTime to back off re-probing to once per
+	// rebalanceBackoffInterval. A surge that joins and sheds its old node is
+	// progress, not a failure, and records nothing here, so successful rounds are
+	// never throttled. Timestamp marker: status is always true once recorded.
+	ControlPlaneRebalanceBackoff Condition `json:"controlPlaneRebalanceBackoff,omitempty"`
 }
 
 type ClusterFilters struct {

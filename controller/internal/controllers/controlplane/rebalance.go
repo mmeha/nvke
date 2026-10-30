@@ -35,15 +35,14 @@ const (
 	// old, less-preferred node its surge replaced.
 	rebalanceShedReason = "Control-plane rebalance: shedding a less-preferred node after its replacement joined"
 
-	// rebalanceAttemptInterval rate-limits how often the step starts a new surge.
-	// A surge that cannot find capacity is abandoned after
-	// defaultRebalanceSurgeTimeout; without a cooldown the step would re-surge on
-	// the very next reconcile and churn a node roughly every surge timeout. The
-	// step records each surge on the cluster and skips starting another until this
-	// interval elapses, so a cluster whose preferred instance type is out of
-	// capacity re-probes on a slow, fixed cadence (roughly once every three hours)
-	// rather than continuously.
-	rebalanceAttemptInterval = 3 * time.Hour
+	// rebalanceBackoffInterval rate-limits re-probing after a surge is abandoned
+	// for lack of preferred capacity: the step records the abandonment and skips
+	// starting another surge until this elapses, so a cluster with no preferred
+	// capacity re-probes slowly instead of churning a surge every timeout. A surge
+	// that joins and sheds the old node is progress, not a failure, and records no
+	// backoff -- the next round follows immediately, so the control plane converges
+	// onto the preferred types as fast as capacity allows.
+	rebalanceBackoffInterval = 3 * time.Hour
 )
 
 // reconcileControlPlaneRebalance moves the control plane onto more-preferred
@@ -54,9 +53,11 @@ const (
 // it is independent of the automatic scale-down toggle. It is opportunistic and
 // the lowest-priority control-plane step -- it only acts when nothing else is in
 // flight, and it yields to upgrades and rollouts by abandoning an in-flight
-// surge rather than blocking them. Surge starts are rate-limited to one per
-// rebalanceAttemptInterval, so a cluster that cannot get its preferred instance
-// type re-probes slowly instead of churning a surge every surge timeout.
+// surge rather than blocking them. It backs off re-probing to one per
+// rebalanceBackoffInterval only after a surge is abandoned for lack of capacity,
+// so a cluster that cannot get its preferred instance type re-probes slowly
+// instead of churning a surge every surge timeout; a successful surge-and-shed
+// round is not throttled.
 //
 // The step is provider-neutral: it decides whether to surge through the
 // ControlPlaneScaleDownRanker seam, and bounds the surge's instance-type
@@ -112,13 +113,13 @@ func (r *reconciler) reconcileControlPlaneRebalance(
 	if !controlPlaneHasNodeBelowPrimaryRank(eligible, ranker) {
 		return nil
 	}
-	// Rate-limit surge starts: a prior surge within the interval means we re-probe
-	// later rather than churning a new one every surge timeout while the preferred
-	// type stays out of capacity.
+	// Back off only after a surge was abandoned for lack of capacity: re-probe
+	// slowly rather than churn a surge every timeout. Successful rounds record no
+	// backoff and flow straight through.
 	if rebalanceCoolingDown(cluster) {
-		logger.Debug("Control-plane rebalance cooling down since the last surge; skipping",
-			"lastAttempt", cluster.Conditions.ControlPlaneRebalanceAttempted.LastTransitionTime,
-			"interval", rebalanceAttemptInterval,
+		logger.Debug("Control-plane rebalance backing off after an abandoned surge; skipping",
+			"lastBackoff", cluster.Conditions.ControlPlaneRebalanceBackoff.LastTransitionTime,
+			"interval", rebalanceBackoffInterval,
 		)
 		return nil
 	}
@@ -152,38 +153,33 @@ func (r *reconciler) reconcileControlPlaneRebalance(
 			"preferenceCap", capRank,
 			"configurationID", snapshotID,
 		)
-		// Start the cooldown so the next surge waits rebalanceAttemptInterval. A
-		// record failure rolls back the surge in the same transaction, so a retry
-		// re-surges cleanly rather than leaving an unrecorded one.
-		if err := r.recordRebalanceAttempt(ctx, cluster.ID, logger); err != nil {
-			return err
-		}
 	}
 	return nil
 }
 
-// rebalanceCoolingDown reports whether a rebalance surge was started within
-// rebalanceAttemptInterval, so the step should not start another yet. A cluster
-// that has never recorded an attempt (zero timestamp) is never cooling down.
+// rebalanceCoolingDown reports whether a surge was abandoned for lack of capacity
+// within rebalanceBackoffInterval. A cluster that never recorded one is never
+// backing off, so a steady stream of successful surge-and-shed rounds is never
+// throttled.
 func rebalanceCoolingDown(cluster db.Cluster) bool {
-	last := cluster.Conditions.ControlPlaneRebalanceAttempted.LastTransitionTime
-	return !last.IsZero() && time.Since(last) < rebalanceAttemptInterval
+	last := cluster.Conditions.ControlPlaneRebalanceBackoff.LastTransitionTime
+	return !last.IsZero() && time.Since(last) < rebalanceBackoffInterval
 }
 
-// recordRebalanceAttempt stamps the cluster with the time of the surge just
-// started, anchoring the rebalanceAttemptInterval cooldown. It re-reads the
-// cluster before writing (the caller already holds the row lock) so it extends,
-// rather than clobbers, conditions written earlier in the same reconcile.
-func (r *reconciler) recordRebalanceAttempt(ctx context.Context, clusterID uuid.UUID, logger *slog.Logger) error {
+// recordRebalanceBackoff stamps the time a surge was abandoned for lack of
+// capacity, which anchors the re-probe backoff. It re-reads the cluster (the
+// caller holds the lock) so it extends rather than clobbers conditions written
+// earlier in the same reconcile.
+func (r *reconciler) recordRebalanceBackoff(ctx context.Context, clusterID uuid.UUID, logger *slog.Logger) error {
 	cluster, err := r.db.GetCluster(ctx, clusterID)
 	if err != nil {
-		return fmt.Errorf("loading cluster %s to record rebalance attempt: %w", clusterID, err)
+		return fmt.Errorf("loading cluster %s to record rebalance backoff: %w", clusterID, err)
 	}
-	cluster.Conditions.ControlPlaneRebalanceAttempted = db.NewCondition(true, "Surged a more-preferred control-plane replacement")
+	cluster.Conditions.ControlPlaneRebalanceBackoff = db.NewCondition(true, "Abandoned a more-preferred control-plane surge for lack of capacity")
 	if _, err := r.db.UpdateCluster(ctx, &cluster); err != nil {
-		return fmt.Errorf("recording rebalance attempt for cluster %s: %w", clusterID, err)
+		return fmt.Errorf("recording rebalance backoff for cluster %s: %w", clusterID, err)
 	}
-	logger.Debug("Recorded control-plane rebalance attempt; next surge waits for the cooldown", "interval", rebalanceAttemptInterval)
+	logger.Debug("Recorded control-plane rebalance backoff; next surge waits for the interval", "interval", rebalanceBackoffInterval)
 	return nil
 }
 
@@ -206,10 +202,14 @@ func (r *reconciler) reconcileRebalanceSurge(ctx context.Context, cluster db.Clu
 		return r.abandonRebalanceSurge(ctx, cp, surge, "yielding to a control-plane upgrade or rollout", nodeLogger)
 	}
 
-	// No capacity across the whole capped preference within the timeout: give up
-	// and re-probe later.
+	// No capacity across the whole capped preference within the timeout: give up,
+	// then back off so the next round re-probes slowly instead of churning a surge
+	// every timeout.
 	if rebalanceSurgeExpired(surge) {
-		return r.abandonRebalanceSurge(ctx, cp, surge, "no capacity for a more-preferred instance type", nodeLogger)
+		if err := r.abandonRebalanceSurge(ctx, cp, surge, "no capacity for a more-preferred instance type", nodeLogger); err != nil {
+			return err
+		}
+		return r.recordRebalanceBackoff(ctx, cluster.ID, nodeLogger)
 	}
 
 	nodeLogger.Debug("Control-plane rebalance surge coming up; waiting")
