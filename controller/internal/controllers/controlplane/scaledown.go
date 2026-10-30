@@ -134,6 +134,16 @@ func (r *reconciler) recordControlPlaneManagedDelete(ctx context.Context, logger
 			nodeLogger.Warn("Control-plane delete refused by the quorum floor at record time", "err", err)
 			return false, nil
 		}
+		// A delete already recorded for this node is the desired end state, not a
+		// failure. The rebalance shed and scale-down can both target the same
+		// surplus node within one transactional reconcile (both read the same
+		// in-memory snapshot taken before either recorded its intent), so the
+		// second record must be a benign no-op: erroring here rolls back the whole
+		// reconcile, undoing the first record and wedging the shed in a livelock.
+		if errors.Is(err, nodes.ErrDeleteAlreadyRequested) {
+			nodeLogger.Debug("Control-plane delete already recorded this reconcile; treating as a no-op")
+			return false, nil
+		}
 		return false, fmt.Errorf("recording control-plane delete for node %s (%s): %w", victim.ID, victim.Name, err)
 	}
 
