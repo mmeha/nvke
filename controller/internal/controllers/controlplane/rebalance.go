@@ -59,6 +59,10 @@ const (
 // instead of churning a surge every surge timeout; a successful surge-and-shed
 // round is not throttled.
 //
+// It reports whether it changed control-plane membership this pass: a pass that
+// surges, sheds or abandons returns true so the caller returns before scale-down,
+// keeping any later membership step off the pre-rebalance snapshot.
+//
 // The step is provider-neutral: it decides whether to surge through the
 // ControlPlaneScaleDownRanker seam, and bounds the surge's instance-type
 // fallback through the ControlPlaneRebalanceCapper seam, both resolved from the
@@ -72,13 +76,13 @@ func (r *reconciler) reconcileControlPlaneRebalance(
 	cp *controlPlane,
 	allocator domainAllocator,
 	newNodeProvider clients.NewNodeProvider,
-) error {
+) (bool, error) {
 	if cluster.ControlPlaneConfig.NodeRebalanceDisabled {
-		return nil
+		return false, nil
 	}
 	ranker := cluster.ControlPlaneConfig.ScaleDownRanker()
 	if ranker == nil {
-		return nil
+		return false, nil
 	}
 
 	logger := r.logger.With(
@@ -97,21 +101,21 @@ func (r *reconciler) reconcileControlPlaneRebalance(
 	// recycling; the explicit rollout check also covers drift with recycling
 	// disabled, which is a pending operator decision a surge must not muddy.
 	if cp.upgradeInProgress(cluster) {
-		return nil
+		return false, nil
 	}
 	if cp.countNodesNeedingRollout() > 0 {
-		return nil
+		return false, nil
 	}
 	if cp.size() != cluster.ControlPlaneConfig.DesiredCount {
-		return nil
+		return false, nil
 	}
 	if _, inFlight := cp.nodeWithDeleteInFlight(); inFlight {
-		return nil
+		return false, nil
 	}
 
 	eligible := cp.scaleDownEligible()
 	if !controlPlaneHasNodeBelowPrimaryRank(eligible, ranker) {
-		return nil
+		return false, nil
 	}
 	// Back off only after a surge was abandoned for lack of capacity: re-probe
 	// slowly rather than churn a surge every timeout. Successful rounds record no
@@ -121,11 +125,11 @@ func (r *reconciler) reconcileControlPlaneRebalance(
 			"lastBackoff", cluster.Conditions.ControlPlaneRebalanceBackoff.LastTransitionTime,
 			"interval", rebalanceBackoffInterval,
 		)
-		return nil
+		return false, nil
 	}
 	if r.controlPlaneReplacementBlocked(cluster) {
 		logger.Warn("Skipping control-plane rebalance surge because controlPlaneVIP is not configured")
-		return nil
+		return false, nil
 	}
 
 	// Cap the surge's fallback to types strictly better than the worst eligible
@@ -137,24 +141,25 @@ func (r *reconciler) reconcileControlPlaneRebalance(
 	if !ok {
 		// Provider ranks but cannot express a capped preference; do not surge
 		// unbounded.
-		return nil
+		return false, nil
 	}
 	snapshotID, err := db.FindOrCreateControlPlaneConfiguration(ctx, r.db, cluster.ID, cappedSpec, rebalanceSnapshotReason)
 	if err != nil {
-		return fmt.Errorf("resolving capped control-plane config snapshot: %w", err)
+		return false, fmt.Errorf("resolving capped control-plane config snapshot: %w", err)
 	}
 
 	created, err := r.scaleUp(ctx, cluster, 1, "control-plane rebalance surge", allocator, newNodeProvider, withRebalanceReplacement(snapshotID))
 	if err != nil {
-		return fmt.Errorf("surging control-plane rebalance replacement: %w", err)
+		return false, fmt.Errorf("surging control-plane rebalance replacement: %w", err)
 	}
 	if created == 1 {
-		logger.Info("Surged control-plane rebalance replacement; scale-down sheds the old node once it joins",
+		logger.Info("Surged control-plane rebalance replacement; sheds the old node itself once it joins",
 			"preferenceCap", capRank,
 			"configurationID", snapshotID,
 		)
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 
 // rebalanceCoolingDown reports whether a surge was abandoned for lack of capacity
@@ -186,20 +191,26 @@ func (r *reconciler) recordRebalanceBackoff(ctx context.Context, clusterID uuid.
 // reconcileRebalanceSurge drives an in-flight rebalance surge to resolution: it
 // finishes the surge once it joins, and otherwise abandons it on a yield signal
 // or timeout.
-func (r *reconciler) reconcileRebalanceSurge(ctx context.Context, cluster db.Cluster, cp *controlPlane, surge db.Node, logger *slog.Logger) error {
+func (r *reconciler) reconcileRebalanceSurge(ctx context.Context, cluster db.Cluster, cp *controlPlane, surge db.Node, logger *slog.Logger) (bool, error) {
 	nodeLogger := logger.With("nodeID", surge.ID, "nodeName", surge.Name)
 
 	// Joined: the surge is a healthy member. Shed the old, less-preferred node it
 	// replaced and clear the marker.
 	if isCleanJoinedControlPlaneMember(surge) {
-		return r.finishRebalanceSurge(ctx, cluster, cp, surge, nodeLogger)
+		if err := r.finishRebalanceSurge(ctx, cluster, cp, surge, nodeLogger); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 
 	// Not yet joined. Yield to any higher-priority operation by abandoning the
 	// surge, so it never blocks an upgrade or rollout (its capped-config pin and
 	// marker die with the node).
 	if cp.upgradeInProgress(cluster) || cp.countNodesNeedingRollout() > 0 {
-		return r.abandonRebalanceSurge(ctx, cp, surge, "yielding to a control-plane upgrade or rollout", nodeLogger)
+		if err := r.abandonRebalanceSurge(ctx, cp, surge, "yielding to a control-plane upgrade or rollout", nodeLogger); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 
 	// No capacity across the whole capped preference within the timeout: give up,
@@ -207,13 +218,16 @@ func (r *reconciler) reconcileRebalanceSurge(ctx context.Context, cluster db.Clu
 	// every timeout.
 	if rebalanceSurgeExpired(surge) {
 		if err := r.abandonRebalanceSurge(ctx, cp, surge, "no capacity for a more-preferred instance type", nodeLogger); err != nil {
-			return err
+			return false, err
 		}
-		return r.recordRebalanceBackoff(ctx, cluster.ID, nodeLogger)
+		if err := r.recordRebalanceBackoff(ctx, cluster.ID, nodeLogger); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 
 	nodeLogger.Debug("Control-plane rebalance surge coming up; waiting")
-	return nil
+	return false, nil
 }
 
 // finishRebalanceSurge completes a joined surge: it sheds the old, less-preferred

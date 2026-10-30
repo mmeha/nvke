@@ -131,12 +131,21 @@ func (r *reconciler) reconcile(ctx context.Context, cluster db.Cluster) error {
 			return nil
 		}
 
-		// Steady-state rebalance: surge a more-preferred replacement (gated and
-		// one at a time), grow-before-shrink. The scale-down below sheds the old
-		// node once the surge joins. Lowest priority: it yields to the upgrade and
-		// rollout steps above by abandoning an in-flight surge.
-		if err := r.reconcileControlPlaneRebalance(ctx, cluster, controlPlane, allocator, provider.NewNodeProvider()); err != nil {
+		// Steady-state rebalance: surge a more-preferred replacement (gated and one
+		// at a time), grow-before-shrink, then shed the old node itself once the
+		// surge joins. Lowest priority: it yields to the upgrade and rollout steps
+		// above by abandoning an in-flight surge.
+		rebalanceActed, err := r.reconcileControlPlaneRebalance(ctx, cluster, controlPlane, allocator, provider.NewNodeProvider())
+		if err != nil {
 			return fmt.Errorf("reconciling control plane rebalance: %w", err)
+		}
+		// A rebalance that grew, shed or abandoned owns this pass: it already made
+		// its one grow-before-shrink change, so return before scale-down (or any
+		// later membership step) can act on the same slots off the pre-rebalance
+		// snapshot. A recorded shed is promoted to a teardown on the next reconcile,
+		// which the fresh snapshot and one-at-a-time promotion drain normally.
+		if rebalanceActed {
+			return nil
 		}
 	}
 
